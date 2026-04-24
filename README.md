@@ -2,7 +2,7 @@ Como criar um ambiente virtual e utiliza-lo.
 
 1. Instalar o python em uma versão 3.12 ou superior, e adicionar o PATH
 2. executar o comando "python -m venv venv" para criar a pasta venv
-3. executar o comando "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process"
+3. executar o comando "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process" #caso queira rodar no computador da UVV
 4. Executar o comando ".\venv\Scripts\Activate.ps1"
 
 Após criar e abrir o ambiente virtual, executar:
