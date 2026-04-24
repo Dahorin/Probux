@@ -6,7 +6,7 @@ cliente_route = Blueprint('cliente' , __name__)
 @cliente_route.route ('/')
 def lista_clientes():
     """Listar Clientes"""
-    return render_template{"Lista_clientes.html"}
+    return render_template ('clientes.html' , clientes = []) # Substitua [] por uma lista de clientes reais
 
 @cliente_route.route ('/' , methods = {'POST'})
 def inserir_clientes():
@@ -16,7 +16,7 @@ def inserir_clientes():
 @cliente_route.route ('/new' , methods = {'GET'})
 def form_cliente():
     """Formulário para cadastrar um cliente"""
-    return { 'pagina': " cadastrar_cliente"}
+    return render_template ('form_cliente.html')
 
 @cliente_route.route ('/<int:cliente_id>' , methods = {'GET'})
 def detalhe_cliente(cliente_id):
