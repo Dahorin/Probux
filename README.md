@@ -1,4 +1,4 @@
-Como criar um ambiente virtual e utiliza-lo em um computador não da uvv.
+Como criar um ambiente virtual e utiliza-lo.
 
 1. Instalar o python em uma versão 3.12 ou superior, e adicionar o PATH
 2. executar o comando "python -m venv venv" para criar a pasta venv
