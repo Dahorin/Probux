@@ -5,7 +5,8 @@ Como criar um ambiente virtual e utiliza-lo.
 3. executar o comando "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process"
 4. Executar o comando ".\venv\Scripts\Activate.ps1"
 
-Após criar e abrir o ambiente virtual, executar: 
+Após criar e abrir o ambiente virtual, executar:
+- pip install flask
 - pip install django
 
 E para saber se o django tá rodando: 
