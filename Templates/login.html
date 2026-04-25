@@ -1,8 +1,85 @@
-<h2>Login</h2>
-<form method="POST">
-    <input type="text" name="username" placeholder="Usuário" required>
-    <input type="password" name="password" placeholder="Senha" required>
-    <button type="submit">Entrar</button>
-</form>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+</head>
+<body>
+    <section class="section">
+        <div class="container">
+            <div class="columns is-centered">
+                <div class="column is-5-tablet is-4-desktop">
+                    <div class="box">
+                        <h2 class="title has-text-centered">Login</h2>
+                        
+                        <!-- Mensagens Flash -->
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    <div class="notification is-{{ 'danger' if category == 'error' else 'success' }} is-light">
+                                        <button class="delete"></button>
+                                        {{ message }}
+                                    </div>
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+                        
+                        <form method="POST">
+                            <div class="field">
+                                <label class="label">Usuário</label>
+                                <div class="control has-icons-left">
+                                    <input class="input" type="text" name="username" placeholder="Usuário" required>
+                                    <span class="icon is-small is-left">
+                                        <i class="fas fa-user"></i>
+                                    </span>
+                                </div>
+                            </div>
 
-<a href="{{ url_for('main.register') }}">Criar conta</a>
+                            <div class="field">
+                                <label class="label">Senha</label>
+                                <div class="control has-icons-left">
+                                    <input class="input" type="password" name="password" placeholder="Senha" required>
+                                    <span class="icon is-small is-left">
+                                        <i class="fas fa-lock"></i>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="field">
+                                <div class="control">
+                                    <button class="button is-primary is-fullwidth" type="submit">
+                                        Entrar
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+
+                        <hr>
+                        
+                        <p class="has-text-centered">
+                            Não tem conta? <a href="{{ url_for('main.register') }}"><strong>Criar conta</strong></a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Font Awesome para os ícones -->
+    <script defer src="https://use.fontawesome.com/releases/v5.15.4/js/all.js"></script>
+    
+    <!-- Script para fechar notificações -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            (document.querySelectorAll('.notification .delete') || []).forEach(($delete) => {
+                const $notification = $delete.parentNode;
+                $delete.addEventListener('click', () => {
+                    $notification.parentNode.removeChild($notification);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
