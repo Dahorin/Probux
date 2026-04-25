@@ -3,8 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Registro</title>
+    <title>Registro - Probux</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .box {
+            border-radius: 10px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+        }
+        .input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.125em rgba(102,126,234,0.25);
+        }
+        .button.is-primary {
+            background-color: #667eea;
+            transition: background-color 0.3s;
+        }
+        .button.is-primary:hover {
+            background-color: #764ba2;
+        }
+    </style>
 </head>
 <body>
     <section class="section">
@@ -12,50 +34,61 @@
             <div class="columns is-centered">
                 <div class="column is-5-tablet is-4-desktop">
                     <div class="box">
-                        <h2 class="title has-text-centered">Registro</h2>
-                        
+                        <div class="has-text-centered mb-5">
+                            <img src="{{ url_for('static', filename='Logo/Logo.png') }}" alt="Probux Logo" width="200" class="mb-3">
+                            <h1 class="title is-3 has-text-weight-bold" style="color: #667eea;">
+                                <i class="fas fa-user-plus"></i> Registro
+                            </h1>
+                            <p class="subtitle is-6 has-text-grey">Crie sua conta no Probux</p>
+                        </div>
+
                         <form method="POST">
                             <div class="field">
-                                <label class="label">Usuário</label>
+                                <label class="label">
+                                    <i class="fas fa-user"></i> Usuário
+                                </label>
                                 <div class="control has-icons-left">
-                                    <input class="input" type="text" name="username" placeholder="Usuário" required>
-                                    <span class="icon is-small is-left">
+                                    <input class="input is-medium" type="text" name="username" placeholder="Digite seu usuário" required>
+                                    <span class="icon is-medium is-left">
                                         <i class="fas fa-user"></i>
                                     </span>
                                 </div>
                             </div>
 
                             <div class="field">
-                                <label class="label">Senha</label>
+                                <label class="label">
+                                    <i class="fas fa-lock"></i> Senha
+                                </label>
                                 <div class="control has-icons-left">
-                                    <input class="input" type="password" name="password" placeholder="Senha" required>
-                                    <span class="icon is-small is-left">
+                                    <input class="input is-medium" type="password" name="password" placeholder="Digite sua senha" required>
+                                    <span class="icon is-medium is-left">
                                         <i class="fas fa-lock"></i>
                                     </span>
                                 </div>
                             </div>
 
-                            <div class="field">
+                            <div class="field mt-5">
                                 <div class="control">
-                                    <button class="button is-primary is-fullwidth" type="submit">
-                                        Registrar
+                                    <button class="button is-primary is-fullwidth is-medium">
+                                        <span class="icon">
+                                            <i class="fas fa-user-plus"></i>
+                                        </span>
+                                        <span>Registrar</span>
                                     </button>
                                 </div>
                             </div>
                         </form>
 
                         <hr>
-                        
+
                         <p class="has-text-centered">
-                            <a href="/login">Já tem conta? Login</a>
+                            Já tem conta?
+                            <a href="/login" class="has-text-weight-bold" style="color: #667eea;">Fazer Login</a>
                         </p>
                     </div>
                 </div>
             </div>
         </div>
     </section>
-
-    <!-- Opcional: Font Awesome para os ícones -->
-    <script defer src="https://use.fontawesome.com/releases/v5.15.4/js/all.js"></script>
 </body>
 </html>
