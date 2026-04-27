@@ -42,6 +42,18 @@
                             <p class="subtitle is-6 has-text-grey">Crie sua conta no Probux</p>
                         </div>
 
+                        <!-- Mensagens Flash -->
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    <div class="notification is-{{ 'danger' if category == 'error' else 'success' }} is-light">
+                                        <button class="delete"></button>
+                                        {{ message }}
+                                    </div>
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+
                         <form method="POST">
                             <div class="field">
                                 <label class="label">
@@ -51,6 +63,18 @@
                                     <input class="input is-medium" type="text" name="username" placeholder="Digite seu usuário" required>
                                     <span class="icon is-medium is-left">
                                         <i class="fas fa-user"></i>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="field">
+                                <label class="label">
+                                    <i class="fas fa-envelope"></i> Email
+                                </label>
+                                <div class="control has-icons-left">
+                                    <input class="input is-medium" type="email" name="email" placeholder="Digite seu email" required>
+                                    <span class="icon is-medium is-left">
+                                        <i class="fas fa-envelope"></i>
                                     </span>
                                 </div>
                             </div>
@@ -90,5 +114,16 @@
             </div>
         </div>
     </section>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            (document.querySelectorAll('.notification .delete') || []).forEach(($delete) => {
+                const $notification = $delete.parentNode;
+                $delete.addEventListener('click', () => {
+                    $notification.parentNode.removeChild($notification);
+                });
+            });
+        });
+    </script>
 </body>
 </html>
