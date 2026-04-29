@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, redirect, url_for, request, flash, current_app
+from flask import Blueprint, render_template, redirect, url_for, request, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import login_user, login_required, logout_user, current_user
 from flask_mail import Message
@@ -55,13 +55,12 @@ def register():
 
         verification_url = url_for('main.verify_email', token=token, _external=True)
 
-        # Enviar email de verificação
+        # Enviar email de verificação via SMTP (Flask-Mail)
         try:
             msg = Message(
                 'Confirme seu Email - Probux',
-                recipients=[email]
-            )
-            msg.body = f'''Olá {username},
+                recipients=[email],
+                body=f'''Olá {username},
 
 Obrigado por se cadastrar no Probux!
 
@@ -75,7 +74,7 @@ Se você não se cadastrou, ignore este email.
 Atenciosamente,
 Equipe Probux
 '''
-
+            )
             mail.send(msg)
             flash("Conta criada! Verifique seu email para ativar a conta.", "success")
         except Exception as e:
@@ -145,13 +144,33 @@ def forgot_password():
 
             reset_url = url_for('main.reset_password', token=token, _external=True)
 
-            # Mostrar o link no terminal (sem enviar email)
-            print("\n" + "="*60)
-            print("LINK DE RECUPERAÇÃO DE SENHA:")
-            print(reset_url)
-            print("="*60 + "\n")
+            # Enviar email via SMTP
+            try:
+                msg = Message(
+                    'Recuperação de Senha - Probux',
+                    recipients=[email],
+                    body=f'''Olá {user.username},
 
-            flash("Link de recuperação gerado! Verifique o terminal do servidor.", "success")
+Para redefinir sua senha, clique no link abaixo:
+{reset_url}
+
+Este link expira em 1 hora.
+
+Se você não solicitou esta recuperação, ignore este email.
+
+Atenciosamente,
+Equipe Probux
+'''
+                )
+                mail.send(msg)
+                flash("Email de recuperação enviado! Verifique sua caixa de entrada.", "success")
+            except Exception as e:
+                # Se falhar, mostrar no terminal
+                print("\n" + "="*60)
+                print("LINK DE RECUPERAÇÃO DE SENHA:")
+                print(reset_url)
+                print("="*60 + "\n")
+                flash("Link de recuperação gerado! Verifique o terminal do servidor.", "success")
         else:
             flash("Email não encontrado!", "error")
 
@@ -211,3 +230,30 @@ def remove_from_cart(item_id):
     db.session.commit()
     flash("Item removido do carrinho!", "success")
     return redirect(url_for('main.cart'))
+
+@main.route('/profile', methods=['GET', 'POST'])
+@login_required
+def profile():
+    if request.method == 'POST':
+        current_password = request.form['current_password']
+        new_password = request.form['new_password']
+        confirm_password = request.form['confirm_password']
+
+        # Verificar senha atual
+        if not check_password_hash(current_user.password, current_password):
+            flash("Senha atual incorreta!", "error")
+            return render_template('profile.html')
+
+        # Verificar se novas senhas coincidem
+        if new_password != confirm_password:
+            flash("Novas senhas não coincidem!", "error")
+            return render_template('profile.html')
+
+        # Alterar senha
+        current_user.password = generate_password_hash(new_password)
+        db.session.commit()
+
+        flash("Senha alterada com sucesso!", "success")
+        return redirect(url_for('main.profile'))
+
+    return render_template('profile.html')

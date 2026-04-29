@@ -55,6 +55,11 @@
             <a class="navbar-item" href="/cart">
                 <i class="fas fa-shopping-cart"></i>&nbsp; Carrinho
             </a>
+            {% if current_user.is_authenticated %}
+                <a class="navbar-item" href="/profile">
+                    <i class="fas fa-user"></i>&nbsp; Perfil
+                </a>
+            {% endif %}
         </div>
 
         <div class="navbar-end">

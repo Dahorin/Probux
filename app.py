@@ -12,10 +12,11 @@ load_dotenv()
 app = Flask(__name__)
 
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'segredo_super_secreto_padrao')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+# Usar pasta instance/ (padrão do Flask)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.instance_path, 'database.db')
 
-# Configuração do Flask-Mail via variáveis de ambiente
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+# Configurações do Flask-Mail via variáveis de ambiente (SMTP Umbler)
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.umbler.com')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
 app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
