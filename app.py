@@ -12,8 +12,8 @@ load_dotenv()
 app = Flask(__name__)
 
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'segredo_super_secreto_padrao')
-# Usar pasta instance/ (padrão do Flask)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.instance_path, 'database.db')
+# PostgreSQL como banco oficial
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres@localhost:5432/probux')
 
 # Configurações do Flask-Mail via variáveis de ambiente (SMTP Umbler)
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.umbler.com')
