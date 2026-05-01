@@ -113,11 +113,15 @@
                     <div class="card product-card">
                         <div class="card-image">
                             <figure class="image is-4by3" style="background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center;">
+                                {% if product.is_gamepass %}
+                                    <img src="{{ url_for('static', filename='Gamepass/Gamepass.png') }}" alt="Gamepass" style="max-height: 80%; max-width: 80%;">
+                                {% else %}
                                 <div style="text-align: center; color: white;">
                                     <i class="fas fa-coins fa-4x"></i>
                                     <p class="is-size-1 has-text-weight-bold mt-3">{{ product.name.split(' ')[0] }}</p>
                                     <p class="is-size-4">ROBUX</p>
                                 </div>
+                                {% endif %}
                             </figure>
                         </div>
                         <div class="card-content has-text-centered">

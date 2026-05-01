@@ -79,16 +79,37 @@
                             <div class="columns is-vcentered">
                                 <div class="column is-3">
                                     <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; border-radius: 8px; text-align: center; color: white;">
-                                        <i class="fas fa-coins fa-2x"></i>
-                                        <p class="is-size-4 has-text-weight-bold mt-2">{{ item.product.name.split(' ')[0] }}</p>
-                                        <p>ROBUX</p>
+                                        {% if item.product.is_gamepass %}
+                                            <i class="fas fa-gamepad fa-2x"></i>
+                                            <p class="is-size-4 has-text-weight-bold mt-2">GP</p>
+                                            <p>GAMEPASS</p>
+                                        {% else %}
+                                            <i class="fas fa-coins fa-2x"></i>
+                                            <p class="is-size-4 has-text-weight-bold mt-2">{{ item.product.name.split(' ')[0] }}</p>
+                                            <p>ROBUX</p>
+                                        {% endif %}
                                     </div>
                                 </div>
                                 <div class="column is-6">
                                     <h3 class="title is-5">{{ item.product.name }}</h3>
-                                    <p class="subtitle is-6" style="color: #667eea;">
-                                        R$ {{ "%.2f"|format(item.product.price) }}
-                                    </p>
+                                    {% if item.product.is_gamepass and item.robux_amount %}
+                                        <p class="subtitle is-6" style="color: #667eea;">
+                                            R$ {{ "%.2f"|format(item.robux_amount * item.product.price_per_robux) }}
+                                        </p>
+                                        <p class="is-size-7 has-text-grey">
+                                            <i class="fas fa-coins"></i> {{ item.robux_amount }} Robux
+                                        </p>
+                                        {% if item.gamepass_link %}
+                                        <p class="is-size-7 has-text-grey">
+                                            <i class="fas fa-link"></i>
+                                            <a href="{{ item.gamepass_link }}" target="_blank">Link da Gamepass</a>
+                                        </p>
+                                        {% endif %}
+                                    {% else %}
+                                        <p class="subtitle is-6" style="color: #667eea;">
+                                            R$ {{ "%.2f"|format(item.product.price) }}
+                                        </p>
+                                    {% endif %}
                                     <p>Quantidade: {{ item.quantity }}</p>
                                 </div>
                                 <div class="column is-3 has-text-right">

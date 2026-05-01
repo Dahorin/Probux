@@ -55,6 +55,8 @@ class Product(db.Model):
     price = db.Column(db.Float, nullable=False)
     description = db.Column(db.Text, nullable=True)
     image_url = db.Column(db.String(500), nullable=True)
+    is_gamepass = db.Column(db.Boolean, default=False)
+    price_per_robux = db.Column(db.Float, default=0.05)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     # Relacionamento com itens do carrinho
     cart_items = db.relationship('CartItem', backref='product', lazy=True, cascade='all, delete-orphan')
@@ -64,4 +66,6 @@ class CartItem(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
     quantity = db.Column(db.Integer, default=1)
+    robux_amount = db.Column(db.Integer, nullable=True)
+    gamepass_link = db.Column(db.String(500), nullable=True)
     added_at = db.Column(db.DateTime, default=datetime.utcnow)

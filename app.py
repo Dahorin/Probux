@@ -14,6 +14,8 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'segredo_super_secreto_padrao')
 # PostgreSQL como banco oficial
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres@localhost:5432/probux')
+# Roblox cookie para verificação de Gamepass
+app.config['ROBLOX_COOKIE'] = os.getenv('ROBLOX_COOKIE', '')
 
 # Configurações do Flask-Mail via variáveis de ambiente (SMTP Umbler)
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.umbler.com')
