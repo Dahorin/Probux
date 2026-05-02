@@ -90,6 +90,8 @@
                         <div class="level-right">
                             {% if order.status == 'pending' %}
                                 <span class="tag is-warning is-medium">Aguardando Pagamento</span>
+                            {% elif order.status == 'payment_claimed' %}
+                                <span class="tag is-info is-medium">Pagamento em Análise</span>
                             {% elif order.status == 'paid' %}
                                 <span class="tag is-success is-medium">Pago</span>
                             {% else %}

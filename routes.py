@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, redirect, url_for, request, flash, current_app
+from flask import Blueprint, render_template, redirect, url_for, request, flash, current_app, jsonify
 from markupsafe import Markup
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import login_user, login_required, logout_user, current_user
@@ -13,6 +13,12 @@ import zlib
 from datetime import datetime, timedelta
 import os
 import urllib.parse
+
+def is_valid_email(email):
+    """Verifica se o email tem formato válido."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+import mercadopago_utils
 
 # Log simples para debug
 import logging
@@ -448,17 +454,48 @@ def checkout():
         else:
             total += item.product.price * item.quantity
 
-    pix_key = current_app.config.get('PIX_KEY') or os.getenv('PIX_KEY', '')
-    if not pix_key:
-        flash("Erro: Chave Pix não configurada!", "error")
-        return redirect(url_for('main.cart'))
+    # Integração com Mercado Pago Pix
+    # Cria o pedido primeiro para ter o ID
+    order = Order(
+        user_id=current_user.id,
+        total=total,
+        status='pending'
+    )
+    db.session.add(order)
+    db.session.flush()  # Obtém o ID do pedido
 
-    # Gera PIX Code (BR Code EMV) válido
-    pix_code = generate_pix_code(pix_key, total)
-    # Gera QR Code a partir do código EMV
-    qr_url = f"https://quickchart.io/qr?size=250&text={urllib.parse.quote(pix_code)}"
+    # Cria pagamento Pix no Mercado Pago
+    description = f"Pedido Probux #{order.id}"
+    mp_payment = mercadopago_utils.create_pix_payment(
+        total,
+        description,
+        order.id,
+        current_user.email
+    )
 
-    return render_template('checkout.html', total=total, qr_code=qr_url, pix_code=pix_code, cart_items=cart_items)
+    if mp_payment:
+        # Salva os dados do Mercado Pago no pedido
+        order.mp_payment_id = str(mp_payment['id'])
+        order.pix_code = mp_payment['qr_code']
+        order.mp_qr_code_base64 = mp_payment['qr_code_base64']
+        db.session.commit()
+
+        # QR Code do Mercado Pago (usando base64 ou o código copia/cola)
+        qr_url = None  # O Mercado Pago fornece base64, não URL de imagem
+        pix_code = mp_payment['qr_code']
+    else:
+        # Fallback: gera Pix manual (caso falhe o Mercado Pago)
+        pix_key = current_app.config.get('PIX_KEY') or os.getenv('PIX_KEY', '')
+        if pix_key:
+            pix_code = generate_pix_code(pix_key, total)
+            qr_url = f"https://quickchart.io/qr?size=250&text={urllib.parse.quote(pix_code)}"
+        else:
+            pix_code = ""
+            qr_url = ""
+        db.session.commit()
+
+    return render_template('checkout.html', total=total, qr_code=qr_url, pix_code=pix_code,
+                           mp_payment=mp_payment, order_id=order.id, cart_items=cart_items)
 
 
 @main.route('/confirm_payment', methods=['POST'])
@@ -526,12 +563,13 @@ def confirm_order(order_id):
         flash("Acesso negado!", "error")
         return redirect(url_for('main.index'))
     if order.status != 'pending':
-        flash("Este pedido não está pendente!", "error")
+        flash("Este pedido não está pendente ou você já confirmou o pagamento!", "error")
         return redirect(url_for('main.order_details', order_id=order.id))
-    # Marca como pago (confirmação manual)
-    order.status = 'paid'
+    # Apenas registra que o usuário afirmou ter pagado (não aprova ainda)
+    order.status = 'payment_claimed'
+    order.payment_claimed_at = datetime.utcnow()
     db.session.commit()
-    flash("Pagamento confirmado! Seus Robux serão entregues em até 24 horas.", "success")
+    flash("Pagamento registrado! Aguarde a confirmação manual da equipe.", "info")
     return redirect(url_for('main.order_details', order_id=order.id))
 
 @main.route('/resend_payment/<int:order_id>')
@@ -582,3 +620,136 @@ def cancel_order(order_id):
 @main.route('/como-criar-gamepass')
 def como_criar_gamepass():
     return render_template('como-criar-gamepass.html')
+
+@main.route('/webhook/mercadopago', methods=['POST', 'GET'])
+def mercadopago_webhook():
+    """
+    Webhook para receber notificações do Mercado Pago sobre pagamentos.
+    O Mercado Pago envia uma notificação quando o status do pagamento muda.
+    """
+    if request.method == 'GET':
+        # O Mercado Pago pode fazer um GET para verificar se o webhook está ativo
+        return jsonify({'status': 'ok'}), 200
+
+    data = request.json or request.form.to_dict()
+
+    if not data:
+        return jsonify({'error': 'No data received'}), 400
+
+    # O Mercado Pago envia diferentes tipos de notificações
+    # Para pagamentos Pix, o tipo é 'payment'
+    if data.get('type') == 'payment':
+        payment_id = data.get('data', {}).get('id')
+
+        if payment_id:
+            # Consulta o status do pagamento no Mercado Pago
+            sdk = mercadopago_utils.get_mp_sdk()
+            if sdk:
+                try:
+                    payment_info = sdk.payment().get(payment_id)
+                    payment = payment_info["response"]
+
+                    # Busca o pedido pelo ID do pagamento do Mercado Pago
+                    order = Order.query.filter_by(mp_payment_id=str(payment_id)).first()
+
+                    if order:
+                        # Atualiza o status do pedido baseado no status do Mercado Pago
+                        mp_status = payment.get('status')
+
+                        if mp_status == 'approved':
+                            order.status = 'paid'
+                            db.session.commit()
+                            # Opcional: enviar email de confirmação
+                            print(f"Pedido {order.id} pago via Mercado Pago!")
+                        elif mp_status == 'pending':
+                            order.status = 'pending'
+                            db.session.commit()
+                        elif mp_status in ['cancelled', 'rejected']:
+                            order.status = 'cancelled'
+                            db.session.commit()
+
+                except Exception as e:
+                    print(f"Erro ao processar webhook: {e}")
+                    return jsonify({'error': str(e)}), 500
+
+    return jsonify({'status': 'processed'}), 200
+
+@main.route('/check_payment/<int:order_id>')
+@login_required
+def check_payment(order_id):
+    """
+    Rota para verificar o status do pagamento via AJAX.
+    O frontend pode chamar essa rota periodicamente para atualizar o status.
+    """
+    order = Order.query.get_or_404(order_id)
+
+    if order.user_id != current_user.id:
+        return jsonify({'error': 'Acesso negado'}), 403
+
+    # Se tem ID do Mercado Pago, consulta o status
+    if order.mp_payment_id:
+        mp_status = mercadopago_utils.get_payment_status(order.mp_payment_id)
+
+        if mp_status == 'approved' and order.status != 'paid':
+            order.status = 'paid'
+            db.session.commit()
+            return jsonify({'status': 'paid', 'redirect': url_for('main.order_details', order_id=order.id)})
+
+    return jsonify({'status': order.status})
+
+@main.route('/test_db')
+def test_db():
+    """Rota para testar conexão com o banco de dados."""
+    try:
+        from sqlalchemy import text
+        result = db.session.execute(text('SELECT 1'))
+        row = result.fetchone()
+        # Testa se consegue consultar usuários
+        user_count = User.query.count()
+        order_count = Order.query.count()
+        return jsonify({
+            'status': 'success',
+            'db_connection': 'connected',
+            'test_query': str(row[0]),
+            'user_count': user_count,
+            'order_count': order_count,
+            'database_url': current_app.config['SQLALCHEMY_DATABASE_URI'][:50] + '...'  # Mostra só o início por segurança
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'db_connection': 'failed',
+            'error': str(e),
+            'error_type': type(e).__name__
+        }), 500
+
+@main.route('/debug_user/<username>')
+def debug_user(username):
+    """Rota para verificar se usuário existe e status de verificação."""
+    user = User.query.filter((User.username == username) | (User.email == username)).first()
+    if not user:
+        return jsonify({
+            'status': 'not_found',
+            'message': 'Usuário não encontrado'
+        }), 404
+    
+    return jsonify({
+        'status': 'found',
+        'username': user.username,
+        'email': user.email,
+        'email_verified': user.email_verified,
+        'has_password': bool(user.password),
+        'verification_token_exists': bool(user.verification_token)
+    }), 200
+
+@main.route('/debug_session')
+def debug_session():
+    """Rota para verificar estado da sessão e login."""
+    from flask import session
+    return jsonify({
+        'session': dict(session),
+        'is_authenticated': current_user.is_authenticated if hasattr(current_user, 'is_authenticated') else None,
+        'user_id': current_user.id if current_user and current_user.is_authenticated else None,
+        'username': current_user.username if current_user and current_user.is_authenticated else None,
+        'current_user_str': str(current_user)
+    }), 200

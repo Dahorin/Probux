@@ -72,8 +72,11 @@ class Order(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     total = db.Column(db.Float, nullable=False)
-    status = db.Column(db.String(50), default='pending')
-    pix_code = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(50), default='pending')  # pending, payment_claimed, paid, cancelled
+    pix_code = db.Column(db.Text, nullable=True)  # Código Pix copia e cola
+    mp_payment_id = db.Column(db.String(100), nullable=True)  # ID do pagamento no Mercado Pago
+    mp_qr_code_base64 = db.Column(db.Text, nullable=True)  # QR Code em base64 do Mercado Pago
+    payment_claimed_at = db.Column(db.DateTime, nullable=True)  # Quando o usuário afirmou ter pagado
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref='orders')
     items = db.relationship('OrderItem', backref='order', lazy=True, cascade='all, delete-orphan')
