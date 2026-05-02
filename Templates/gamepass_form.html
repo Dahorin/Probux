@@ -65,9 +65,9 @@
                     {% with messages = get_flashed_messages(with_categories=true) %}
                         {% if messages %}
                             {% for category, message in messages %}
-                                <div class="notification is-{{ 'danger' if category == 'error' else 'success' }} is-light">
+                                <div class="notification is-{{ 'danger' if category == 'error' else 'success' if category == 'success' else 'warning' }} is-light">
                                     <button class="delete"></button>
-                                    {{ message }}
+                                    {{ message | safe }}
                                 </div>
                             {% endfor %}
                         {% endif %}

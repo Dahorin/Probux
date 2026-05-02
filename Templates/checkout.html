@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Checkout - Probux</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: rgba(255,255,255,0.95) !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .qr-container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            display: inline-block;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+<nav class="navbar" role="navigation" aria-label="main navigation">
+    <div class="navbar-brand">
+        <a class="navbar-item" href="/">
+            <img src="{{ url_for('static', filename='Logo/Logo.png') }}" alt="Probux Logo" width="150">
+        </a>
+    </div>
+
+    <div class="navbar-menu">
+        <div class="navbar-start">
+            <a class="navbar-item" href="/">
+                <i class="fas fa-home"></i>&nbsp; Home
+            </a>
+            <a class="navbar-item" href="/cart">
+                <i class="fas fa-shopping-cart"></i>&nbsp; Carrinho
+            </a>
+        </div>
+
+        <div class="navbar-end">
+            <div class="navbar-item">
+                <div class="buttons">
+                    <span class="mr-3 has-text-weight-bold">
+                        <i class="fas fa-user"></i> {{ current_user.username }}
+                    </span>
+                    <a class="button is-light" href="/logout">
+                        <i class="fas fa-sign-out-alt"></i>&nbsp; Sair
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<section class="section">
+    <div class="container">
+        <h1 class="title has-text-centered has-text-white">
+            <i class="fas fa-credit-card"></i> Finalizar Compra
+        </h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="notification is-{{ 'danger' if category == 'error' else 'success' }} is-light">
+                        <button class="delete"></button>
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="columns is-centered">
+            <div class="column is-8">
+                <!-- QR Code Pix -->
+                <div class="box has-text-centered">
+                    <h2 class="title is-4" style="color: #667eea;">
+                        <i class="fas fa-qrcode"></i> Pagamento Pix
+                    </h2>
+                    <p class="subtitle is-6 has-text-grey mb-5">
+                        Escaneie o QR Code abaixo com o app do seu banco
+                    </p>
+
+                    <div class="qr-container mb-5">
+                        <img src="{{ qr_code }}" alt="QR Code Pix" style="max-width: 250px;">
+                    </div>
+
+                    <div class="box" style="background: #f5f5f5;">
+                        <p class="has-text-grey mb-2">Código Pix (Copia e Cola):</p>
+                        <div class="control">
+                            <input class="input is-small" type="text" value="{{ pix_code }}" readonly id="pixCode">
+                        </div>
+                        <button class="button is-small mt-2" onclick="copyPixCode()" style="background-color: #667eea; color: white;">
+                            <i class="fas fa-copy"></i>&nbsp; Copiar Código
+                        </button>
+                    </div>
+
+                    <div class="notification is-info is-light">
+                        <p><i class="fas fa-info-circle"></i> <strong>Total a pagar: R$ {{ "%.2f"|format(total) }}</strong></p>
+                        <p class="is-size-7 mt-2">Após realizar o pagamento, clique no botão abaixo para confirmar.</p>
+                    </div>
+
+                    <form method="POST" action="{{ url_for('main.confirm_payment') }}">
+                        <button type="submit" class="button is-large is-fullwidth" style="background-color: #667eea; color: white;">
+                            <i class="fas fa-check"></i>&nbsp; Já realizei o pagamento
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Itens do Pedido -->
+                <div class="box">
+                    <h3 class="title is-5" style="color: #667eea;">
+                        <i class="fas fa-shopping-bag"></i> Itens do Pedido
+                    </h3>
+                    {% for item in cart_items %}
+                        <div class="box" style="background: #f9f9f9;">
+                            <div class="columns is-vcentered">
+                                <div class="column is-3">
+                                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 15px; border-radius: 8px; text-align: center; color: white;">
+                                        {% if item.product.is_gamepass %}
+                                            <i class="fas fa-gamepad fa-2x"></i>
+                                            <p class="is-size-5 has-text-weight-bold mt-2">GP</p>
+                                        {% else %}
+                                            <i class="fas fa-coins fa-2x"></i>
+                                            <p class="is-size-5 has-text-weight-bold mt-2">{{ item.product.name.split(' ')[0] }}</p>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="column is-9">
+                                    <h4 class="title is-6">{{ item.product.name }}</h4>
+                                    {% if item.robux_amount %}
+                                        <p class="is-size-7 has-text-grey">
+                                            <i class="fas fa-coins"></i> {{ item.robux_amount }} Robux
+                                        </p>
+                                    {% endif %}
+                                    <p class="has-text-weight-bold" style="color: #667eea;">
+                                        {% if item.robux_amount and item.product.is_gamepass %}
+                                            R$ {{ "%.2f"|format(item.robux_amount * item.product.price_per_robux) }}
+                                        {% else %}
+                                            R$ {{ "%.2f"|format(item.product.price) }}
+                                        {% endif %}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        (document.querySelectorAll('.notification .delete') || []).forEach(($delete) => {
+            const $notification = $delete.parentNode;
+            $delete.addEventListener('click', () => {
+                $notification.parentNode.removeChild($notification);
+            });
+        });
+    });
+
+    function copyPixCode() {
+        const pixCode = document.getElementById('pixCode');
+        pixCode.select();
+        document.execCommand('copy');
+        alert('Código Pix copiado!');
+    }
+</script>
+</body>
+</html>

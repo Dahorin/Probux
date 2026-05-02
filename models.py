@@ -13,7 +13,6 @@ class User(UserMixin, db.Model):
     verification_token_expiry = db.Column(db.DateTime, nullable=True)
     reset_token = db.Column(db.String(100), nullable=True)
     reset_token_expiry = db.Column(db.DateTime, nullable=True)
-    # Relacionamento com o carrinho
     cart_items = db.relationship('CartItem', backref='user', lazy=True, cascade='all, delete-orphan')
 
     def generate_verification_token(self):
@@ -58,7 +57,6 @@ class Product(db.Model):
     is_gamepass = db.Column(db.Boolean, default=False)
     price_per_robux = db.Column(db.Float, default=0.05)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Relacionamento com itens do carrinho
     cart_items = db.relationship('CartItem', backref='product', lazy=True, cascade='all, delete-orphan')
 
 class CartItem(db.Model):
@@ -69,3 +67,22 @@ class CartItem(db.Model):
     robux_amount = db.Column(db.Integer, nullable=True)
     gamepass_link = db.Column(db.String(500), nullable=True)
     added_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    total = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(50), default='pending')
+    pix_code = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    user = db.relationship('User', backref='orders')
+    items = db.relationship('OrderItem', backref='order', lazy=True, cascade='all, delete-orphan')
+
+class OrderItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    quantity = db.Column(db.Integer, default=1)
+    price = db.Column(db.Float, nullable=False)
+    robux_amount = db.Column(db.Integer, nullable=True)
+    gamepass_link = db.Column(db.String(500), nullable=True)

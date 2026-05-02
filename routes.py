@@ -1,80 +1,88 @@
 from flask import Blueprint, render_template, redirect, url_for, request, flash, current_app
+from markupsafe import Markup
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import login_user, login_required, logout_user, current_user
 from flask_mail import Message
-from models import User, Product, CartItem
+from models import User, Product, CartItem, Order, OrderItem
 from extensions import db, mail
 import re
 import secrets
 import requests
 from datetime import datetime, timedelta
 import os
-from bs4 import BeautifulSoup
+import urllib.parse
 
 main = Blueprint('main', __name__)
 
 def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
-    """Extrai o ID da Gamepass do link e verifica o preço real no Roblox."""
+    """Extrai o ID da Gamepass do link e verifica o preço via API/HTML do Roblox."""
     try:
-        # Extrair o ID da Gamepass do link
         match = re.search(r'game-pass/(\d+)', gamepass_link)
         if not match:
             return None, "Link da Gamepass inválido"
 
         gamepass_id = match.group(1)
 
-        # Headers com o cookie de autenticação
-        headers = {
-            'Cookie': f'.ROBLOSECURITY={roblox_cookie}',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'pt-BR,pt;q=0.9'
-        }
+        # Cria sessão e injeta o cookie
+        s = requests.Session()
+        s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
+        s.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+            'Referer': 'https://www.roblox.com/',
+        })
 
-        # Testar múltiplas variações de URL
-        url_variations = [
-            f'https://www.roblox.com/pt/game-pass/{gamepass_id}',
-            f'https://www.roblox.com/game-pass/{gamepass_id}',
-            gamepass_link
-        ]
+        # Pega XSRF token
+        try:
+            r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
+            xsrf = r.headers.get('X-CSRF-TOKEN')
+            if xsrf:
+                s.headers['X-CSRF-TOKEN'] = xsrf
+        except:
+            pass
 
-        html_content = None
-        for url in url_variations:
-            try:
-                response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-                if response.status_code == 200:
-                    html_content = response.text
-                    break
-            except:
-                continue
+        # Tenta primeiro via API de catálogo (POST) - requer cookie
+        try:
+            catalog_url = 'https://catalog.roblox.com/v1/catalog/items/details'
+            resp = s.post(catalog_url, json={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]}, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get('data', [])
+                if items:
+                    price = items[0].get('price') or items[0].get('priceInRobux')
+                    if price is not None:
+                        return int(price), None
+        except:
+            pass
 
-        if not html_content:
-            return None, "Não foi possível acessar a página da Gamepass (Status 404)"
+        # Fallback: usa a URL original enviada pelo usuário (com slug completo)
+        try:
+            # Se o link já tem slug, usa ele diretamente
+            if '/DONATE' in gamepass_link or '/donate' in gamepass_link.lower():
+                page_url = gamepass_link
+            else:
+                page_url = f'https://www.roblox.com/game-pass/{gamepass_id}'
 
-        soup = BeautifulSoup(html_content, 'html.parser')
+            resp = s.get(page_url, timeout=15, allow_redirects=True)
+            if resp.status_code == 200:
+                html = resp.text
+                # Procura por padrões comuns de preço
+                patterns = [
+                    r'"price"\s*:\s*(\d+)',
+                    r'"PriceInRobux"\s*:\s*(\d+)',
+                    r'data-expected-price="(\d+)"',
+                    r'data-price="(\d+)"',
+                    r'(\d+)\s*Robux',
+                ]
+                for p in patterns:
+                    m = re.search(p, html)
+                    if m:
+                        return int(m.group(1)), None
+        except:
+            pass
 
-        # Procurar pelo atributo data-expected-price
-        elements_with_price = soup.find_all(attrs={'data-expected-price': True})
-        for element in elements_with_price:
-            price_str = element.get('data-expected-price')
-            if price_str and price_str.isdigit():
-                return int(price_str), None
-
-        # Fallback: procurar por data-price
-        elements_with_price2 = soup.find_all(attrs={'data-price': True})
-        for element in elements_with_price2:
-            price_str = element.get('data-price')
-            if price_str and price_str.isdigit():
-                return int(price_str), None
-
-        # Fallback: procurar no texto por "Robux"
-        robux_pattern = re.compile(r'(\d+)\s*[Rr]obux')
-        matches = robux_pattern.findall(html_content)
-        if matches:
-            for m in matches:
-                if int(m) > 0:
-                    return int(m), None
-
-        return None, "Não foi possível encontrar o preço da Gamepass na página"
+        return None, "Não foi possível encontrar o preço da Gamepass. Verifique se ela está pública e à venda."
 
     except Exception as e:
         return None, f"Erro ao verificar Gamepass: {str(e)}"
@@ -313,12 +321,18 @@ def gamepass_form(product_id):
         if roblox_cookie:
             actual_price, error = get_roblox_gamepass_price(gamepass_link, roblox_cookie)
             if error:
-                flash(f"Aviso: {error}", "error")
+                if '404' in error:
+                    flash(f"{error}", "error")
+                    flash(Markup('Dica: Sua Gamepass pode estar privada. <a href="/como-criar-gamepass" class="has-text-weight-bold" style="color: #3273dc;">Clique aqui para saber como criar uma Gamepass pública</a>'), "warning")
+                else:
+                    flash(f"Erro ao verificar Gamepass: {error}", "error")
+                return render_template('gamepass_form.html', product=product)
             elif actual_price is not None and actual_price != robux_amount:
                 flash(f"O preço informado ({robux_amount} Robux) não corresponde ao preço da Gamepass no Roblox ({actual_price} Robux). Por favor, verifique.", "error")
                 return render_template('gamepass_form.html', product=product)
         else:
-            flash("Aviso: Configuração do Roblox não encontrada. Não foi possível verificar o preço.", "error")
+            flash("Aviso: Configuração do Roblox não encontrada. Não foi possível verificar o preço.", "warning")
+            return render_template('gamepass_form.html', product=product)
 
         cart_item = CartItem(
             user_id=current_user.id,
@@ -386,3 +400,91 @@ def profile():
         return redirect(url_for('main.profile'))
 
     return render_template('profile.html')
+
+@main.route('/checkout')
+@login_required
+def checkout():
+    cart_items = CartItem.query.filter_by(user_id=current_user.id).all()
+    if not cart_items:
+        flash("Seu carrinho está vazio!", "error")
+        return redirect(url_for('main.cart'))
+
+    total = 0
+    for item in cart_items:
+        if item.robux_amount and item.product.is_gamepass:
+            total += round(item.robux_amount * item.product.price_per_robux, 2) * item.quantity
+        else:
+            total += item.product.price * item.quantity
+
+    pix_key = current_app.config.get('PIX_KEY') or os.getenv('PIX_KEY', '')
+    if not pix_key:
+        flash("Erro: Chave Pix não configurada!", "error")
+        return redirect(url_for('main.cart'))
+
+    # Gerar Pix Copia e Cola (formato BR Code simplificado)
+    pix_code = f"00020126580014br.gov.bcb.pix0136{pix_key}520400005303986540{int(total*100):02d}5802BR5925Probux Robux6009Sao Paulo62070503***6304"
+    import zlib
+    crc = zlib.crc32(pix_code.encode()) & 0xffffffff
+    pix_code = pix_code + f"{crc:04X}"
+
+    # Gerar QR Code usando Google Charts API (sem biblioteca externa)
+    qr_url = f"https://chart.googleapis.com/chart?cht=qr&chs=250x250&chl={urllib.parse.quote(pix_code)}"
+
+    return render_template('checkout.html', total=total, qr_url=qr_url, pix_code=pix_code, cart_items=cart_items)
+
+@main.route('/confirm_payment', methods=['POST'])
+@login_required
+def confirm_payment():
+    cart_items = CartItem.query.filter_by(user_id=current_user.id).all()
+    if not cart_items:
+        flash("Carrinho vazio!", "error")
+        return redirect(url_for('main.cart'))
+
+    total = 0
+    for item in cart_items:
+        if item.robux_amount and item.product.is_gamepass:
+            total += round(item.robux_amount * item.product.price_per_robux, 2) * item.quantity
+        else:
+            total += item.product.price * item.quantity
+
+    pix_key = current_app.config.get('PIX_KEY') or os.getenv('PIX_KEY', '')
+    pix_code = f"00020126580014br.gov.bcb.pix0136{pix_key}520400005303986540{int(total*100):02d}5802BR5925Probux Robux6009Sao Paulo62070503***6304"
+    import zlib
+    crc = zlib.crc32(pix_code.encode()) & 0xffffffff
+    pix_code = pix_code + f"{crc:04X}"
+
+    order = Order(user_id=current_user.id, total=total, status='pending', pix_code=pix_code)
+    db.session.add(order)
+    db.session.flush()
+
+    for item in cart_items:
+        price = item.product.price
+        if item.robux_amount and item.product.is_gamepass:
+            price = round(item.robux_amount * item.product.price_per_robux, 2)
+        order_item = OrderItem(
+            order_id=order.id,
+            product_id=item.product_id,
+            quantity=item.quantity,
+            price=price,
+            robux_amount=item.robux_amount,
+            gamepass_link=item.gamepass_link
+        )
+        db.session.add(order_item)
+        db.session.delete(item)
+
+    db.session.commit()
+    flash("Pedido realizado! Aguardando confirmação do pagamento.", "success")
+    return redirect(url_for('main.order_details', order_id=order.id))
+
+@main.route('/order/<int:order_id>')
+@login_required
+def order_details(order_id):
+    order = Order.query.get_or_404(order_id)
+    if order.user_id != current_user.id:
+        flash("Acesso negado!", "error")
+        return redirect(url_for('main.index'))
+    return render_template('order.html', order=order)
+
+@main.route('/como-criar-gamepass')
+def como_criar_gamepass():
+    return render_template('como-criar-gamepass.html')
