@@ -6,10 +6,7 @@ Como criar um ambiente virtual e utiliza-lo.
 4. Executar o comando ".\venv\Scripts\Activate.ps1"
 
 Após criar e abrir o ambiente virtual, executar:
-- pip install flask
-- pip install django
-- pip install flask flask-sqlalchemy flask-login werkzeug
-- pip install flask-migrate python-dotenv
+- pip install -r requirements.txt
 
 E para saber se o django tá rodando: 
 - python manage.py runserver
