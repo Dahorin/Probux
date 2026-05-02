@@ -86,3 +86,4 @@ class OrderItem(db.Model):
     price = db.Column(db.Float, nullable=False)
     robux_amount = db.Column(db.Integer, nullable=True)
     gamepass_link = db.Column(db.String(500), nullable=True)
+    product = db.relationship('Product', backref='order_items')
