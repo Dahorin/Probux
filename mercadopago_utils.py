@@ -1,7 +1,7 @@
 import mercadopago
-import os
-import re
-import requests
+import os\
+import re\
+import requests\
 from datetime import datetime
 
 # Configurações do Mercado Pago
@@ -13,7 +13,6 @@ def get_mp_sdk():
     if not MP_ACCESS_TOKEN:
         return None
     return mercadopago.SDK(MP_ACCESS_TOKEN)
-
 
 def create_pix_payment(amount, description, order_id, payer_email=None):
     """
@@ -50,7 +49,6 @@ def create_pix_payment(amount, description, order_id, payer_email=None):
         print(f"Erro ao criar pagamento Pix: {e}")
         return None
 
-
 def get_payment_status(payment_id):
     """
     Consulta o status de um pagamento no Mercado Pago.
@@ -66,7 +64,6 @@ def get_payment_status(payment_id):
     except Exception as e:
         print(f"Erro ao consultar pagamento: {e}")
         return None
-
 
 def buy_gamepass_with_cookie(gamepass_link, roblox_cookie):
     """
@@ -101,15 +98,8 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie):
         except:
             pass
 
-        # Tenta acessar a página da Gamepass
-        page_url = f"https://www.roblox.com/game-pass/{gamepass_id}"
-        resp = s.get(page_url, timeout=15, allow_redirects=True)
-
-        if resp.status_code != 200:
-            return False, f"Erro ao acessar Gamepass: {resp.status_code}"
-
         # Tenta comprar a Gamepass via API
-        # NOTA: A API de compra do Roblox muda frequentemente
+        # Nota: A API de compra do Roblox muda frequentemente
         # Esta é uma implementação simplificada
 
         print(f"[GAMEPASS] Tentando comprar gamepass {gamepass_id}")
@@ -121,11 +111,10 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie):
     except Exception as e:
         return False, f"Erro na API Roblox: {str(e)}"
 
-
 def deliver_gamepasses(order):
     """
     Entrega as Gamepasses de um pedido após pagamento confirmado.
-    Usa a conta Roblox configurada no ROBOX_COOKIE.
+    Usa a conta configurada no ROBOX_COOKIE para comprar.
     Retorna (sucesso, mensagem).
     """
     # Importa aqui dentro da função para evitar importação circular
@@ -139,7 +128,7 @@ def deliver_gamepasses(order):
 
     roblox_cookie = ROBOX_COOKIE
     if not roblox_cookie:
-        return False, "Cookie do Roblox não configurado"
+        return False, "Token do Roblox não configurado"
 
     results = []
 
@@ -154,10 +143,11 @@ def deliver_gamepasses(order):
 
         if success:
             print(f"[ENTREGA] Pedido {order.id}: Gamepass {gamepass_link} comprada")
+        else:
+            print(f"[ENTREGA] Pedido {order.id}: Erro ao comprar - {msg}")
 
-    # Verifica se todas foram compradas com sucesso
+    # Marca como entregue no banco (se todas compradas)
     if all('sucesso' in r.lower() for r in results):
-        # Marca como entregue no banco
         order.delivered = True
         order.delivered_at = datetime.utcnow()
         from extensions import db
