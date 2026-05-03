@@ -77,6 +77,8 @@ class Order(db.Model):
     mp_payment_id = db.Column(db.String(100), nullable=True)  # ID do pagamento no Mercado Pago
     mp_qr_code_base64 = db.Column(db.Text, nullable=True)  # QR Code em base64 do Mercado Pago
     payment_claimed_at = db.Column(db.DateTime, nullable=True)  # Quando o usuário afirmou ter pagado
+    delivered = db.Column(db.Boolean, default=False)  # Se a Gamepass foi entregue
+    delivered_at = db.Column(db.DateTime, nullable=True)  # Quando foi entregue
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref='orders')
     items = db.relationship('OrderItem', backref='order', lazy=True, cascade='all, delete-orphan')

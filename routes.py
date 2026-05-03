@@ -601,7 +601,11 @@ def cleanup_orders():
 @main.route('/meus_pedidos')
 @login_required
 def meus_pedidos():
-    orders = Order.query.filter_by(user_id=current_user.id).order_by(Order.created_at.desc()).all()
+    # Não mostra pedidos cancelados para o cliente
+    orders = Order.query.filter(
+        Order.user_id == current_user.id,
+        Order.status != 'cancelled'
+    ).order_by(Order.created_at.desc()).all()
     return render_template('meus_pedidos.html', orders=orders)
 
 @main.route('/cancel_order/<int:order_id>')
@@ -661,8 +665,13 @@ def mercadopago_webhook():
                         if mp_status == 'approved':
                             order.status = 'paid'
                             db.session.commit()
-                            # Opcional: enviar email de confirmação
-                            print(f"Pedido {order.id} pago via Mercado Pago!")
+                            # Processa entrega automatica da Gamepass
+                            from mercadopago_utils import deliver_gamepass
+                            success, msg = deliver_gamepass(order)
+                            if success:
+                                print(f"Pedido {order.id}: {msg}")
+                            else:
+                                print(f"Pedido {order.id}: Erro na entrega: {msg}")
                         elif mp_status == 'pending':
                             order.status = 'pending'
                             db.session.commit()
@@ -698,3 +707,44 @@ def check_payment(order_id):
             return jsonify({'status': 'paid', 'redirect': url_for('main.order_details', order_id=order.id)})
 
     return jsonify({'status': order.status})
+
+@main.route('/delete_order/<int:order_id>')
+@login_required
+def delete_order(order_id):
+    """Exclui um pedido (apenas se estiver pago)."""
+    order = Order.query.get_or_404(order_id)
+    
+    if order.user_id != current_user.id:
+        flash("Acesso negado!", "error")
+        return redirect(url_for('main.meus_pedidos'))
+    
+    if order.status != 'paid':
+        flash("Só é possível excluir pedidos pagos!", "error")
+        return redirect(url_for('main.meus_pedidos'))
+    
+    db.session.delete(order)
+    db.session.commit()
+    flash("Pedido excluído com sucesso!", "success")
+    return redirect(url_for('main.meus_pedidos'))
+
+@main.route('/delete_all_paid_orders')
+@login_required
+def delete_all_paid_orders():
+    """Exclui TODOS os pedidos pagos do usuário."""
+    paid_orders = Order.query.filter(
+        Order.user_id == current_user.id,
+        Order.status == 'paid'
+    ).all()
+    
+    count = len(paid_orders)
+    
+    if count == 0:
+        flash("Você não tem pedidos pagos para excluir!", "info")
+        return redirect(url_for('main.meus_pedidos'))
+    
+    for order in paid_orders:
+        db.session.delete(order)
+    
+    db.session.commit()
+    flash(f"{count} pedido(s) pago(s) excluído(s) com sucesso!", "success")
+    return redirect(url_for('main.meus_pedidos'))

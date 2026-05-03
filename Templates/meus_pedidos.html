@@ -163,6 +163,16 @@
                 </a>
             </div>
         {% endif %}
+
+        {% if orders and orders|selectattr('status', '==', 'paid')|list|length > 0 %}
+            <div class="has-text-centered mt-5">
+                <a href="{{ url_for('main.delete_all_paid_orders') }}"
+                   class="button is-danger is-medium"
+                   onclick="return confirm('Tem certeza que deseja excluir TODOS os pedidos pagos? Esta ação não pode ser desfeita.');">
+                    <i class="fas fa-trash"></i>&nbsp; Excluir Todos os Pedidos Pagos
+                </a>
+            </div>
+        {% endif %}
     </div>
 </section>
 
