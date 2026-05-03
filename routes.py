@@ -13,11 +13,6 @@ import zlib
 from datetime import datetime, timedelta
 import os
 import urllib.parse
-
-def is_valid_email(email):
-    """Verifica se o email tem formato válido."""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return re.match(pattern, email) is not None
 import mercadopago_utils
 
 # Log simples para debug
@@ -26,6 +21,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 main = Blueprint('main', __name__)
+
+def is_valid_email(email):
+    """Verifica se o email tem formato válido."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
 
 def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
     """Extrai o ID da Gamepass do link e verifica o preço via API/HTML do Roblox."""
@@ -497,7 +497,6 @@ def checkout():
     return render_template('checkout.html', total=total, qr_code=qr_url, pix_code=pix_code,
                            mp_payment=mp_payment, order_id=order.id, cart_items=cart_items)
 
-
 @main.route('/confirm_payment', methods=['POST'])
 @login_required
 def confirm_payment():
@@ -551,7 +550,10 @@ def order_details(order_id):
     # Se o pedido está pendente, gera o QR Code novamente
     qr_url = None
     if order.status == 'pending' and order.pix_code:
-        qr_url = f"https://quickchart.io/qr?size=250&text={urllib.parse.quote(order.pix_code)}"
+        if order.mp_qr_code_base64:
+            qr_url = f"data:image/png;base64,{order.mp_qr_code_base64}"
+        else:
+            qr_url = f"https://quickchart.io/qr?size=250&text={urllib.parse.quote(order.pix_code)}"
 
     return render_template('order.html', order=order, qr_url=qr_url)
 
@@ -696,60 +698,3 @@ def check_payment(order_id):
             return jsonify({'status': 'paid', 'redirect': url_for('main.order_details', order_id=order.id)})
 
     return jsonify({'status': order.status})
-
-@main.route('/test_db')
-def test_db():
-    """Rota para testar conexão com o banco de dados."""
-    try:
-        from sqlalchemy import text
-        result = db.session.execute(text('SELECT 1'))
-        row = result.fetchone()
-        # Testa se consegue consultar usuários
-        user_count = User.query.count()
-        order_count = Order.query.count()
-        return jsonify({
-            'status': 'success',
-            'db_connection': 'connected',
-            'test_query': str(row[0]),
-            'user_count': user_count,
-            'order_count': order_count,
-            'database_url': current_app.config['SQLALCHEMY_DATABASE_URI'][:50] + '...'  # Mostra só o início por segurança
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'db_connection': 'failed',
-            'error': str(e),
-            'error_type': type(e).__name__
-        }), 500
-
-@main.route('/debug_user/<username>')
-def debug_user(username):
-    """Rota para verificar se usuário existe e status de verificação."""
-    user = User.query.filter((User.username == username) | (User.email == username)).first()
-    if not user:
-        return jsonify({
-            'status': 'not_found',
-            'message': 'Usuário não encontrado'
-        }), 404
-    
-    return jsonify({
-        'status': 'found',
-        'username': user.username,
-        'email': user.email,
-        'email_verified': user.email_verified,
-        'has_password': bool(user.password),
-        'verification_token_exists': bool(user.verification_token)
-    }), 200
-
-@main.route('/debug_session')
-def debug_session():
-    """Rota para verificar estado da sessão e login."""
-    from flask import session
-    return jsonify({
-        'session': dict(session),
-        'is_authenticated': current_user.is_authenticated if hasattr(current_user, 'is_authenticated') else None,
-        'user_id': current_user.id if current_user and current_user.is_authenticated else None,
-        'username': current_user.username if current_user and current_user.is_authenticated else None,
-        'current_user_str': str(current_user)
-    }), 200

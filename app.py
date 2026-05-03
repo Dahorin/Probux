@@ -11,7 +11,18 @@ load_dotenv()
 
 app = Flask(__name__)
 
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'segredo_super_secreto_padrao')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'awmjd-jawpdjpoJAOI@JOIALJDASLDJl2kdjmnaksmndal')
+
+# Configurações de sessão para HTTPS (produção)
+app.config['SESSION_COOKIE_SECURE'] = True  # OBRIGATÓRIO para HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_PERMANENT'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hora
+
+# ProxyFix para rodar atrás de Nginx/reverso proxy
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # PostgreSQL como banco oficial
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres@localhost:5432/probux')
 # Roblox cookie para verificação de Gamepass
