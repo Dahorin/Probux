@@ -3,10 +3,7 @@ from flask_mail import Mail
 from dotenv import load_dotenv
 import os
 from extensions import db, login_manager
-from models import User
-from routes import main
 
-# Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
 
 app = Flask(__name__)
@@ -44,8 +41,10 @@ login_manager.login_view = 'main.login'
 
 @login_manager.user_loader
 def load_user(user_id):
+    from models import User
     return User.query.get(int(user_id))
 
+from routes import main
 app.register_blueprint(main)
 
 with app.app_context():

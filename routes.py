@@ -464,6 +464,21 @@ def checkout():
     db.session.add(order)
     db.session.flush()  # Obtém o ID do pedido
 
+    # Cria os itens do pedido a partir do carrinho
+    for item in cart_items:
+        price = item.product.price
+        if item.robux_amount and item.product.is_gamepass:
+            price = round(item.robux_amount * item.product.price_per_robux, 2)
+        order_item = OrderItem(
+            order_id=order.id,
+            product_id=item.product_id,
+            quantity=item.quantity,
+            price=price,
+            robux_amount=item.robux_amount,
+            gamepass_link=item.gamepass_link
+        )
+        db.session.add(order_item)
+
     # Cria pagamento Pix no Mercado Pago
     description = f"Pedido Probux #{order.id}"
     mp_payment = mercadopago_utils.create_pix_payment(
@@ -547,9 +562,9 @@ def order_details(order_id):
         flash("Acesso negado!", "error")
         return redirect(url_for('main.index'))
 
-    # Se o pedido está pendente, gera o QR Code novamente
+    # Se o pedido está pendente ou aguardando confirmação, mostra o QR Code
     qr_url = None
-    if order.status == 'pending' and order.pix_code:
+    if order.status in ['pending', 'payment_claimed'] and order.pix_code:
         if order.mp_qr_code_base64:
             qr_url = f"data:image/png;base64,{order.mp_qr_code_base64}"
         else:
@@ -567,11 +582,27 @@ def confirm_order(order_id):
     if order.status != 'pending':
         flash("Este pedido não está pendente ou você já confirmou o pagamento!", "error")
         return redirect(url_for('main.order_details', order_id=order.id))
-    # Apenas registra que o usuário afirmou ter pagado (não aprova ainda)
+
+    # Tenta verificar se o Mercado Pago já aprovou
+    if order.mp_payment_id:
+        mp_status = mercadopago_utils.get_payment_status(order.mp_payment_id)
+        if mp_status == 'approved':
+            order.status = 'paid'
+            db.session.commit()
+            print(f"[CONFIRM_ORDER] Pedido {order.id}: Pago! Tentando entregar...")
+            from mercadopago_utils import deliver_gamepasses
+            success, msg = deliver_gamepasses(order)
+            if success:
+                flash(f"Pagamento aprovado e gamepass entregue! {msg}", "success")
+            else:
+                flash(f"Pago, mas erro na entrega: {msg}", "error")
+            return redirect(url_for('main.order_details', order_id=order.id))
+
+    # Se não aprovou ainda, marca como aguardando
     order.status = 'payment_claimed'
     order.payment_claimed_at = datetime.utcnow()
     db.session.commit()
-    flash("Pagamento registrado! Aguarde a confirmação manual da equipe.", "info")
+    flash("Pagamento registrado! Aguarde a confirmação do Mercado Pago.", "info")
     return redirect(url_for('main.order_details', order_id=order.id))
 
 @main.route('/resend_payment/<int:order_id>')
@@ -633,11 +664,16 @@ def mercadopago_webhook():
     Webhook para receber notificações do Mercado Pago sobre pagamentos.
     O Mercado Pago envia uma notificação quando o status do pagamento muda.
     """
+    print(f"\n[WEBHOOK] Requisição recebida: {request.method}")
+    print(f"[WEBHOOK] Headers: {dict(request.headers)}")
+    print(f"[WEBHOOK] Data: {request.json or request.form.to_dict()}")
+
     if request.method == 'GET':
         # O Mercado Pago pode fazer um GET para verificar se o webhook está ativo
         return jsonify({'status': 'ok'}), 200
 
     data = request.json or request.form.to_dict()
+    print(f"[WEBHOOK] Dados processados: {data}")
 
     if not data:
         return jsonify({'error': 'No data received'}), 400
@@ -666,8 +702,8 @@ def mercadopago_webhook():
                             order.status = 'paid'
                             db.session.commit()
                             # Processa entrega automatica da Gamepass
-                            from mercadopago_utils import deliver_gamepass
-                            success, msg = deliver_gamepass(order)
+                            from mercadopago_utils import deliver_gamepasses
+                            success, msg = deliver_gamepasses(order)
                             if success:
                                 print(f"Pedido {order.id}: {msg}")
                             else:
@@ -704,6 +740,11 @@ def check_payment(order_id):
         if mp_status == 'approved' and order.status != 'paid':
             order.status = 'paid'
             db.session.commit()
+            print(f"[CHECK_PAYMENT] Pedido {order.id}: Pagamento aprovado! Tentando entregar...")
+            # Processa entrega automatica da Gamepass
+            from mercadopago_utils import deliver_gamepasses
+            success, msg = deliver_gamepasses(order)
+            print(f"[CHECK_PAYMENT] Pedido {order.id}: {msg}")
             return jsonify({'status': 'paid', 'redirect': url_for('main.order_details', order_id=order.id)})
 
     return jsonify({'status': order.status})
@@ -726,6 +767,31 @@ def delete_order(order_id):
     db.session.commit()
     flash("Pedido excluído com sucesso!", "success")
     return redirect(url_for('main.meus_pedidos'))
+
+@main.route('/test_deliver/<int:order_id>')
+@login_required
+def test_deliver(order_id):
+    """Rota de teste para forçar a entrega de um pedido."""
+    order = Order.query.get_or_404(order_id)
+    if order.user_id != current_user.id:
+        flash("Acesso negado!", "error")
+        return redirect(url_for('main.meus_pedidos'))
+
+    print(f"\n[TESTE] Forçando entrega do pedido {order.id}...")
+    print(f"[TESTE] Status atual: {order.status}")
+    print(f"[TESTE] Itens: {len(order.items)}")
+
+    from mercadopago_utils import deliver_gamepasses
+    success, msg = deliver_gamepasses(order)
+
+    print(f"[TESTE] Resultado: {msg}")
+
+    if success:
+        flash(f"Entrega realizada! {msg}", "success")
+    else:
+        flash(f"Erro na entrega: {msg}", "error")
+
+    return redirect(url_for('main.order_details', order_id=order.id))
 
 @main.route('/delete_all_paid_orders')
 @login_required
