@@ -1,10 +1,10 @@
 import mercadopago
 import os
 import re
-import requests
+import subprocess
 from datetime import datetime
 
-# Configuracoes do Mercado Pago
+# Configurações do Mercado Pago
 MP_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', '')
 ROBLOX_COOKIE = os.getenv('ROBLOX_COOKIE', '')
 
@@ -17,7 +17,7 @@ def get_mp_sdk():
 def create_pix_payment(amount, description, order_id, payer_email=None):
     """
     Cria um pagamento Pix no Mercado Pago.
-    Retorna um dicionario com os dados do pagamento ou None em caso de erro.
+    Retorna um dicionário com os dados do pagamento ou None em caso de erro.
     """
     sdk = get_mp_sdk()
     if not sdk:
@@ -67,96 +67,89 @@ def get_payment_status(payment_id):
 
 def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None):
     """
-    Compra uma Gamepass usando o cookie do Roblox.
+    Compra uma Gamepass usando o Node.js + Puppeteer (via subprocess).
     Retorna uma tupla (sucesso, mensagem).
     """
     if not roblox_cookie:
-        return (False, "Cookie do Roblox nao configurado")
+        return (False, "Cookie do Roblox não configurado")
 
     # Extrai o ID da Gamepass
     match = re.search(r'game-pass/(\d+)', gamepass_link)
     if not match:
-        return (False, "Link da Gamepass invalido")
+        return (False, "Link da Gamepass inválido")
 
     gamepass_id = match.group(1)
 
     try:
-        s = requests.Session()
-        s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
-        s.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        })
+        print(f"[GAMEPASS] Tentando comprar gamepass {gamepass_id} (preço: {expected_price})")
+        print(f"[GAMEPASS] Chamando Node.js via subprocess...")
 
-        # Pega XSRF token
-        try:
-            r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
-            xsrf = r.headers.get('X-CSRF-TOKEN')
-            if xsrf:
-                s.headers['X-CSRF-TOKEN'] = xsrf
-                print(f"[GAMEPASS] XSRF Token obtido: {xsrf[:20]}...")
-        except Exception as e:
-            print(f"[GAMEPASS] Erro ao obter XSRF: {e}")
+        # Define o cookie no ambiente para o Node.js
+        env = os.environ.copy()
+        env['ROBLOX_COOKIE'] = roblox_cookie
 
-        # Endpoint de compra (não oficial - usa economy.roblox.com)
-        print(f"[GAMEPASS] Tentando comprar gamepass {gamepass_id} (preco: {expected_price})")
-        # Tenta diferentes endpoints possiveis
-        endpoints = [
-            f'https://economy.roblox.com/v1/purchases/game-pass/{gamepass_id}/purchase',
-            f'https://api.roblox.com/mobile-api/game-pass/{gamepass_id}/purchase',
-            f'https://economy.roblox.com/v1/purchases/game-pass/{gamepass_id}/purchase'
-        ]
+        # Caminho para o script Node.js
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.join(script_dir, 'comprar-gamepass.js')
 
-        payload = {}
-        if expected_price is not None:
-            payload['expectedPrice'] = int(expected_price)
+        if not os.path.exists(script_path):
+            return (False, f"Script Node.js não encontrado: {script_path}")
 
-        resp = None
-        for purchase_url in endpoints:
-            print(f"[GAMEPASS] Tentando endpoint: {purchase_url}")
+        print(f"[GAMEPASS] Executando: node {script_path} {gamepass_id} {expected_price or '0'}")
+
+        result = subprocess.run(
+            ['node', script_path, gamepass_id, str(expected_price or '0')],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120  # 2 minutos de timeout
+        )
+
+        print(f"[GAMEPASS] Node.js STDOUT: {result.stdout}")
+        if result.stderr:
+            print(f"[GAMEPASS] Node.js STDERR: {result.stderr}")
+
+        if result.returncode == 0:
+            # Tenta fazer parse do JSON retornado pelo Node.js
             try:
-                resp = s.post(purchase_url, json=payload, timeout=15)
-                print(f"[GAMEPASS] Status: {resp.status_code}")
-                print(f"[GAMEPASS] Resposta: {resp.text[:300]}")
-                if resp.status_code != 404:
-                    break
-            except Exception as e:
-                print(f"[GAMEPASS] Erro neste endpoint: {e}")
-                continue
-
-        if not resp:
-            return (False, "Nenhum endpoint funcionou")
-
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
-                if data.get('success'):
-                    return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
+                import json
+                # O Node.js imprime JSON na última linha
+                lines = result.stdout.strip().split('\n')
+                for line in reversed(lines):
+                    line = line.strip()
+                    if line.startswith('{') and line.endswith('}'):
+                        try:
+                            node_result = json.loads(line)
+                            if node_result.get('success'):
+                                return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
+                            else:
+                                return (False, f"Falha na compra: {node_result.get('message', 'Erro desconhecido')}")
+                        except:
+                            continue
+                # Se não conseguiu fazer parse do JSON
+                if 'SUCESSO' in result.stdout or 'sucesso' in result.stdout:
+                    return (True, f"Gamepass {gamepass_id} comprada!")
                 else:
-                    error_msg = data.get('error', 'Erro desconhecido')
-                    return (False, f"Falha na compra: {error_msg}")
+                    return (False, f"Resultado ambíguo: {result.stdout[:200]}")
             except Exception as e:
-                return (False, f"Resposta invalida da API: {resp.text[:200]}")
-        elif resp.status_code == 403:
-            return (False, "Acesso negado: cookie invalido/expirado ou Robux insuficiente")
-        elif resp.status_code == 400:
-            return (False, f"Erro na requisicao (400): {resp.text[:200]}")
+                return (False, f"Erro ao processar resultado: {str(e)}")
         else:
-            return (False, f"Erro na API do Roblox: {resp.status_code} - {resp.text[:200]}")
+            return (False, f"Erro no Node.js (código {result.returncode}): {result.stderr[:200]}")
 
+    except subprocess.TimeoutExpired:
+        return (False, "Timeout: Node.js demorou muito para executar (limite: 2min)")
     except Exception as e:
-        return (False, f"Erro na API Roblox: {str(e)}")
+        return (False, f"Erro ao chamar Node.js: {str(e)}")
 
 def deliver_gamepasses(order):
     """
-    Entrega as Gamepasses de um pedido apos pagamento confirmado.
+    Entrega as Gamepasses de um pedido após pagamento confirmado.
     Usa a conta configurada no ROBLOX_COOKIE para comprar.
     Retorna uma tupla (sucesso, mensagem).
     """
     from models import OrderItem
 
-    # Busca todos os itens do pedido que sao gamepass
+    # Busca todos os itens do pedido que são gamepass
     gamepass_items = [item for item in order.items if item.product.is_gamepass]
 
     if not gamepass_items:
@@ -164,7 +157,7 @@ def deliver_gamepasses(order):
 
     roblox_cookie = ROBLOX_COOKIE
     if not roblox_cookie:
-        return (False, "Cookie do Roblox nao configurado no .env")
+        return (False, "Cookie do Roblox não configurado no .env")
 
     print(f"[ENTREGA] Iniciando entrega do pedido {order.id}...")
     results = []
@@ -174,7 +167,7 @@ def deliver_gamepasses(order):
         robux_amount = item.robux_amount
 
         if not robux_amount:
-            results.append(f"Gamepass: Preco em Robux nao informado")
+            results.append(f"Gamepass: Preço em Robux não informado")
             continue
 
         print(f"[ENTREGA] Processando: {gamepass_link} ({robux_amount} Robux)")
