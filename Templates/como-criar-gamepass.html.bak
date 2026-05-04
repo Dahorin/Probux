@@ -65,11 +65,11 @@
 </head>
 <body>
 <nav class="navbar" role="navigation" aria-label="main navigation">
-    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="navbarBasicExample">
-        <span aria-hidden="true"></span>
-        <span aria-hidden="true"></span>
-        <span aria-hidden="true"></span>
-    </a>
+    <div class="navbar-brand">
+        <a class="navbar-item" href="/">
+            <img src="{{ url_for('static', filename='Logo/Logo.png') }}" alt="Probux Logo" width="150">
+        </a>
+    </div>
 
     <div class="navbar-menu">
         <div class="navbar-start">
@@ -82,11 +82,6 @@
         </div>
 
         <div class="navbar-end">
-            <div class="navbar-item">
-                <div class="robux-balance">
-                    <i class="fas fa-coins"></i> {{ roblox_balance if roblox_balance is not none else "?" }} Robux
-                </div>
-            </div>
             <div class="navbar-item">
                 <div class="buttons">
                     {% if current_user.is_authenticated %}

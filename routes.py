@@ -14,13 +14,56 @@ from datetime import datetime, timedelta
 import os
 import urllib.parse
 import mercadopago_utils
+import json
 
 # Log simples para debug
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def get_roblox_balance(roblox_cookie):
+    """
+    Consulta o saldo de Robux da conta do Roblox usando o cookie.
+    Retorna o saldo ou None em caso de erro.
+    """
+    try:
+        s = requests.Session()
+        s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
+        s.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+        })
+
+        # Pega XSRF token
+        try:
+            r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
+            xsrf = r.headers.get('X-CSRF-TOKEN')
+            if xsrf:
+                s.headers['X-CSRF-TOKEN'] = xsrf
+        except:
+            pass
+
+        # Tenta API de saldo (requer cookie válido)
+        resp = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get('robux', 0)
+    except Exception as e:
+        print(f"[ROBUx] Erro ao consultar saldo: {e}")
+        pass
+
+    return None
+
 main = Blueprint('main', __name__)
+
+@main.context_processor
+def inject_roblox_balance():
+    """Injeta o saldo de Robux em todos os templates."""
+    roblox_balance = None
+    roblox_cookie = current_app.config.get('ROBLOX_COOKIE') or os.getenv('ROBLOX_COOKIE')
+    if roblox_cookie:
+        roblox_balance = get_roblox_balance(roblox_cookie)
+    return dict(roblox_balance=roblox_balance)
 
 def is_valid_email(email):
     """Verifica se o email tem formato válido."""
@@ -32,7 +75,7 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
     try:
         match = re.search(r'game-pass/(\d+)', gamepass_link)
         if not match:
-            return None, "Link da Gamepass inválido"
+            return None, None, None, "Link da Gamepass inválido"
 
         gamepass_id = match.group(1)
 
@@ -54,6 +97,15 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
         except:
             pass
 
+        # Pega o saldo da conta
+        balance = None
+        try:
+            resp_balance = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
+            if resp_balance.status_code == 200:
+                balance = resp_balance.json().get('robux', 0)
+        except:
+            pass
+
         # Tenta primeiro via API de catálogo (POST) - requer cookie
         try:
             catalog_url = 'https://catalog.roblox.com/v1/catalog/items/details'
@@ -64,7 +116,7 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
                 if items:
                     price = items[0].get('price') or items[0].get('priceInRobux')
                     if price is not None:
-                        return int(price), None
+                        return int(price), False, balance, None
         except:
             pass
 
@@ -74,6 +126,13 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
             resp = s.get(page_url, timeout=15, allow_redirects=True)
             if resp.status_code == 200:
                 html = resp.text
+
+                # Verifica se já possui a gamepass
+                if ('Você possui esse item' in html or
+                    'Item Owned' in html or
+                    'You already own' in html):
+                    return None, True, balance, "Você já possui esta Gamepass! Não é possível comprar o mesmo passe duas vezes."
+
                 patterns = [
                     r'"price"\s*:\s*(\d+)',
                     r'"PriceInRobux"\s*:\s*(\d+)',
@@ -84,14 +143,14 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
                 for p in patterns:
                     m = re.search(p, html)
                     if m:
-                        return int(m.group(1)), None
+                        return int(m.group(1)), False, balance, None
         except:
             pass
 
-        return None, "Não foi possível encontrar o preço da Gamepass. Verifique se ela está pública e à venda."
+        return None, None, balance, "Não foi possível encontrar o preço da Gamepass. Verifique se ela está pública e à venda."
 
     except Exception as e:
-        return None, f"Erro ao verificar Gamepass: {str(e)}"
+        return None, None, None, f"Erro ao verificar Gamepass: {str(e)}"
 
 def generate_pix_code(pix_key, total):
     """Gera PIX Code (BR Code / EMV) válido segundo padrão do BC."""
@@ -356,16 +415,26 @@ def gamepass_form(product_id):
         # Verifica o preço real da Gamepass no Roblox
         roblox_cookie = current_app.config.get('ROBLOX_COOKIE') or os.getenv('ROBLOX_COOKIE')
         if roblox_cookie:
-            actual_price, error = get_roblox_gamepass_price(gamepass_link, roblox_cookie)
+            actual_price, already_owned, balance, error = get_roblox_gamepass_price(gamepass_link, roblox_cookie)
+            if already_owned:
+                flash(f"Você já possui esta Gamepass! Não é possível comprar o mesmo passe duas vezes.", "error")
+                return render_template('gamepass_form.html', product=product)
             if error:
                 if '404' in error:
                     flash(f"{error}", "error")
                     flash(Markup('Dica: Sua Gamepass pode estar privada. <a href="/como-criar-gamepass" class="has-text-weight-bold" style="color: #3273dc;">Clique aqui para saber como criar uma Gamepass pública</a>'), "warning")
+                elif 'já possui' in error:
+                    flash(f"{error}", "error")
                 else:
                     flash(f"Erro ao verificar Gamepass: {error}", "error")
                 return render_template('gamepass_form.html', product=product)
             elif actual_price is not None and actual_price != robux_amount:
                 flash(f"O preço informado ({robux_amount} Robux) não corresponde ao preço da Gamepass no Roblox ({actual_price} Robux). Por favor, verifique.", "error")
+                return render_template('gamepass_form.html', product=product)
+            # Verifica se a conta tem saldo suficiente
+            if balance is not None and robux_amount > balance:
+                flash(f"Saldo insuficiente! A conta do Roblox tem apenas {balance} Robux disponível, mas a Gamepass custa {robux_amount} Robux.", "error")
+                flash(f"Adicione mais Robux à conta ou escolha uma Gamepass de menor valor.", "warning")
                 return render_template('gamepass_form.html', product=product)
         else:
             flash("Aviso: Configuração do Roblox não encontrada. Não foi possível verificar o preço.", "warning")
@@ -478,6 +547,8 @@ def checkout():
             gamepass_link=item.gamepass_link
         )
         db.session.add(order_item)
+        # Remove o item do carrinho
+        db.session.delete(item)
 
     # Cria pagamento Pix no Mercado Pago
     description = f"Pedido Probux #{order.id}"
@@ -549,10 +620,14 @@ def confirm_payment():
         )
         db.session.add(order_item)
         db.session.delete(item)
+        db.session.delete(item)
 
     db.session.commit()
     flash("Pedido realizado! Aguardando confirmação do pagamento.", "success")
     return redirect(url_for('main.order_details', order_id=order.id))
+
+
+@main.route('/order/<int:order_id>')
 
 @main.route('/order/<int:order_id>')
 @login_required
@@ -579,8 +654,8 @@ def confirm_order(order_id):
     if order.user_id != current_user.id:
         flash("Acesso negado!", "error")
         return redirect(url_for('main.index'))
-    if order.status != 'pending':
-        flash("Este pedido não está pendente ou você já confirmou o pagamento!", "error")
+    if order.status not in ['pending', 'payment_claimed']:
+        flash("Este pedido já foi processado ou cancelado!", "error")
         return redirect(url_for('main.order_details', order_id=order.id))
 
     # Tenta verificar se o Mercado Pago já aprovou
@@ -602,7 +677,7 @@ def confirm_order(order_id):
     order.status = 'payment_claimed'
     order.payment_claimed_at = datetime.utcnow()
     db.session.commit()
-    flash("Pagamento registrado! Aguarde a confirmação do Mercado Pago.", "info")
+    flash("Pagamento registrado! Assim que confirmado, sua gamepass será entregue automaticamente.", "info")
     return redirect(url_for('main.order_details', order_id=order.id))
 
 @main.route('/resend_payment/<int:order_id>')
@@ -699,16 +774,29 @@ def mercadopago_webhook():
                         mp_status = payment.get('status')
 
                         if mp_status == 'approved':
-                            order.status = 'paid'
-                            db.session.commit()
-                            # Processa entrega automatica da Gamepass
-                            from mercadopago_utils import deliver_gamepasses
-                            success, msg = deliver_gamepasses(order)
-                            if success:
-                                print(f"Pedido {order.id}: {msg}")
+                            # Evita sobrescrever status 'delivered' já processado
+                            if order.status == 'delivered':
+                                print(f"[WEBHOOK] Pedido {order.id}: Já entregue, ignorando notificação duplicada.")
+                            elif order.status == 'paid':
+                                # Já está como pago, tenta entregar se ainda não entregou
+                                print(f"[WEBHOOK] Pedido {order.id}: Status 'paid', tentando entregar...")
+                                from mercadopago_utils import deliver_gamepasses
+                                success, msg = deliver_gamepasses(order)
+                                # Recarrega do banco para garantir status atualizado
+                                db.session.refresh(order)
+                                print(f"[WEBHOOK] Pedido {order.id}: Entrega - {msg}")
+                                print(f"[WEBHOOK] Pedido {order.id}: Status final: {order.status}")
                             else:
-                                print(f"Pedido {order.id}: Erro na entrega: {msg}")
-                        elif mp_status == 'pending':
+                                # Primeira vez que recebe approved
+                                order.status = 'paid'
+                                db.session.commit()
+                                print(f"[WEBHOOK] Pedido {order.id}: Status atualizado para 'paid', iniciando entrega...")
+                                from mercadopago_utils import deliver_gamepasses
+                                success, msg = deliver_gamepasses(order)
+                                db.session.refresh(order)
+                                print(f"[WEBHOOK] Pedido {order.id}: Entrega - {msg}")
+                                print(f"[WEBHOOK] Pedido {order.id}: Status final: {order.status}")
+                        elif mp_status == 'pending' and order.status not in ['paid', 'delivered', 'cancelled']:
                             order.status = 'pending'
                             db.session.commit()
                         elif mp_status in ['cancelled', 'rejected']:
@@ -737,15 +825,21 @@ def check_payment(order_id):
     if order.mp_payment_id:
         mp_status = mercadopago_utils.get_payment_status(order.mp_payment_id)
 
-        if mp_status == 'approved' and order.status != 'paid':
-            order.status = 'paid'
-            db.session.commit()
-            print(f"[CHECK_PAYMENT] Pedido {order.id}: Pagamento aprovado! Tentando entregar...")
+        if mp_status == 'approved' and order.status not in ['delivered']:
+            # Se ainda não entregou, marca como pago e tenta entregar
+            if order.status != 'paid':
+                order.status = 'paid'
+                db.session.commit()
+                print(f"[CHECK_PAYMENT] Pedido {order.id}: Pagamento aprovado! Iniciando entrega...")
+            else:
+                print(f"[CHECK_PAYMENT] Pedido {order.id}: Status 'paid', tentando entregar...")
+
             # Processa entrega automatica da Gamepass
             from mercadopago_utils import deliver_gamepasses
             success, msg = deliver_gamepasses(order)
-            print(f"[CHECK_PAYMENT] Pedido {order.id}: {msg}")
-            return jsonify({'status': 'paid', 'redirect': url_for('main.order_details', order_id=order.id)})
+            db.session.refresh(order)
+            print(f"[CHECK_PAYMENT] Pedido {order.id}: Entrega - {msg}")
+            print(f"[CHECK_PAYMENT] Pedido {order.id}: Status atual: {order.status}")
 
     return jsonify({'status': order.status})
 
@@ -796,21 +890,21 @@ def test_deliver(order_id):
 @main.route('/delete_all_paid_orders')
 @login_required
 def delete_all_paid_orders():
-    """Exclui TODOS os pedidos pagos do usuário."""
+    """Exclui TODOS os pedidos pagos e entregues do usuário."""
     paid_orders = Order.query.filter(
         Order.user_id == current_user.id,
-        Order.status == 'paid'
+        Order.status.in_(['paid', 'delivered'])
     ).all()
-    
+
     count = len(paid_orders)
-    
+
     if count == 0:
-        flash("Você não tem pedidos pagos para excluir!", "info")
+        flash("Você não tem pedidos pagos ou entregues para excluir!", "info")
         return redirect(url_for('main.meus_pedidos'))
-    
+
     for order in paid_orders:
         db.session.delete(order)
-    
+
     db.session.commit()
-    flash(f"{count} pedido(s) pago(s) excluído(s) com sucesso!", "success")
+    flash(f"{count} pedido(s) excluído(s) com sucesso!", "success")
     return redirect(url_for('main.meus_pedidos'))

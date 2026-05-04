@@ -14,14 +14,53 @@
         .navbar {
             background: rgba(255,255,255,0.95) !important;
             box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            animation: slideDown 0.5s ease-out;
+        }
+        @keyframes slideDown {
+            from { transform: translateY(-100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .navbar-item {
+            transition: all 0.3s ease;
+            border-radius: 8px;
+            margin: 0 2px;
+        }
+        .navbar-item:hover {
+            background: rgba(102,126,234,0.1) !important;
+            transform: translateY(-2px);
+            color: #667eea !important;
+        }
+            transition: all 0.3s ease;
+        }
+            background: rgba(102,126,234,0.1) !important;
+        }
+            transform: translateY(5px) rotate(45deg);
+        }
+            opacity: 0;
+        }
+            transform: translateY(-5px) rotate(-45deg);
+        }
+            transition: all 0.3s ease;
+        }
+        .button {
+            transition: all 0.3s ease !important;
+        }
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
         }
         .product-card {
             transition: transform 0.3s, box-shadow 0.3s;
             border-radius: 10px;
             overflow: hidden;
+            animation: fadeInUp 0.5s ease-out;
+        }
+        @keyframes fadeInUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
         }
         .product-card:hover {
-            transform: translateY(-5px);
+            transform: translateY(-5px) scale(1.02);
             box-shadow: 0 10px 25px rgba(102,126,234,0.3);
         }
         .robux-badge {
@@ -31,21 +70,35 @@
             border-radius: 20px;
             font-weight: bold;
             display: inline-block;
+            animation: pulse 2s infinite;
+        }
+        .robux-balance {
+            background: linear-gradient(135deg, #48c774, #3273dc);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            animation: pulse 2s infinite;
+            box-shadow: 0 2px 10px rgba(72,199,116,0.3);
+        }
+        .robux-balance i {
+            margin-right: 8px;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
         }
     </style>
 </head>
 <body>
 <nav class="navbar" role="navigation" aria-label="main navigation">
-    <div class="navbar-brand">
-        <a class="navbar-item" href="/">
-            <img src="{{ url_for('static', filename='Logo/Logo.png') }}" alt="Probux Logo" width="150">
-        </a>
-        <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="navbarBasicExample">
-            <span aria-hidden="true"></span>
-            <span aria-hidden="true"></span>
-            <span aria-hidden="true"></span>
-        </a>
-    </div>
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="navbarBasicExample">
+        <span aria-hidden="true"></span>
+        <span aria-hidden="true"></span>
+        <span aria-hidden="true"></span>
+    </a>
 
     <div id="navbarBasicExample" class="navbar-menu">
         <div class="navbar-start">
@@ -71,6 +124,11 @@
         <div class="navbar-end">
             <div class="navbar-item">
                 <div class="buttons">
+                    {% if roblox_balance is not none %}
+                        <div class="robux-balance mr-3">
+                            <i class="fas fa-coins"></i> {{ roblox_balance }} Robux disponível
+                        </div>
+                    {% endif %}
                     {% if current_user.is_authenticated %}
                         <span class="mr-3 has-text-weight-bold">
                             <i class="fas fa-user"></i> {{ current_user.username }}
@@ -134,7 +192,12 @@
                             <div class="robux-badge mb-3">
                                 <i class="fas fa-gem"></i> {{ product.name }}
                             </div>
-                            <p class="title is-3" style="color: #667eea;">R$ {{ "%.2f"|format(product.price) }}</p>
+                            {% if not product.is_gamepass %}
+                                <p class="title is-3" style="color: #667eea;">R$ {{ "%.2f"|format(product.price) }}</p>
+                            {% else %}
+                                <p class="title is-4 has-text-grey">Preço variável</p>
+                                <p class="is-size-7 has-text-grey">Consulte o valor no Roblox</p>
+                            {% endif %}
                             {% if product.description %}
                                 <p class="content has-text-grey">{{ product.description }}</p>
                             {% endif %}
@@ -170,7 +233,6 @@
             });
         });
 
-        const $navbarBurgers = Array.prototype.slice.call(document.querySelectorAll('.navbar-burger'), 0);
         $navbarBurgers.forEach( el => {
             el.addEventListener('click', () => {
                 const target = el.dataset.target;

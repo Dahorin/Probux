@@ -141,13 +141,15 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None):
     except Exception as e:
         return (False, f"Erro ao chamar Node.js: {str(e)}")
 
-def deliver_gamepasses(order):
+def deliver_gamepasses(order, notify_user=True):
     """
     Entrega as Gamepasses de um pedido após pagamento confirmado.
     Usa a conta configurada no ROBLOX_COOKIE para comprar.
     Retorna uma tupla (sucesso, mensagem).
     """
-    from models import OrderItem
+    from models import OrderItem, User, Order
+    from extensions import db, mail
+    from flask_mail import Message
 
     # Busca todos os itens do pedido que são gamepass
     gamepass_items = [item for item in order.items if item.product.is_gamepass]
@@ -161,6 +163,7 @@ def deliver_gamepasses(order):
 
     print(f"[ENTREGA] Iniciando entrega do pedido {order.id}...")
     results = []
+    success_count = 0
 
     for item in gamepass_items:
         gamepass_link = item.gamepass_link
@@ -175,17 +178,49 @@ def deliver_gamepasses(order):
         results.append(f"Gamepass ({robux_amount} Robux): {msg}")
 
         if success:
+            success_count += 1
             print(f"[ENTREGA] Pedido {order.id}: Gamepass comprada com sucesso!")
         else:
             print(f"[ENTREGA] Pedido {order.id}: Erro ao comprar - {msg}")
 
     # Marca como entregue no banco (se todas compradas)
-    all_success = all('sucesso' in r.lower() for r in results)
-    if all_success and results:
+    all_success = (success_count == len(gamepass_items)) and (len(gamepass_items) > 0)
+    if all_success:
         order.delivered = True
         order.delivered_at = datetime.utcnow()
-        from extensions import db
+        order.status = 'delivered'
         db.session.commit()
-        print(f"[ENTREGA] Pedido {order.id}: Todas gamepasses entregues!")
+        print(f"[ENTREGA] Pedido {order.id}: Todas gamepasses entregues! Status: {order.status}")
+
+        # Envia email de notificação para o usuário
+        if notify_user:
+            try:
+                user = User.query.get(order.user_id)
+                if user and user.email:
+                    msg = Message(
+                        'Gamepass Entregue - Probux',
+                        recipients=[user.email],
+                        body=f'''Olá {user.username},
+
+Sua gamepass foi entregue com sucesso!
+
+Pedido: #{order.id}
+Data de entrega: {order.delivered_at.strftime('%d/%m/%Y às %H:%M')}
+
+Agora você já pode usar sua gamepass no Roblox!
+
+Atenciosamente,
+Equipe Probux
+'''
+                    )
+                    mail.send(msg)
+                    print(f"[ENTREGA] Email de confirmação enviado para {user.email}")
+            except Exception as e:
+                print(f"[ENTREGA] Erro ao enviar email: {e}")
+    else:
+        # Se falhou, volta o status para 'paid' para tentar novamente
+        print(f"[ENTREGA] Pedido {order.id}: Falha na entrega ({success_count}/{len(gamepass_items)} sucesso). Status mantido como 'paid'")
+        order.status = 'paid'
+        db.session.commit()
 
     return (all_success, "; ".join(results))

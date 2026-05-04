@@ -142,13 +142,21 @@ async function buyGamepass(gamepassId, robuxAmount, cookie) {
         }
 
         // Aguarda processamento da compra
-        await new Promise(resolve => setTimeout(resolve, 4000));
+        await new Promise(resolve => setTimeout(resolve, 5000));
 
-        // Verifica resultado
+        // Recarrega a página para verificar se comprou
+        console.log('[NODE] Recarregando página para verificar...');
+        await page.reload({ waitUntil: 'networkidle2' });
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Verifica resultado final procurando "Item Owned" ou textos similares
         const pageText = await page.evaluate(() => document.body.innerText);
+
+        console.log('[NODE] Verificando texto da página...');
 
         if (pageText.includes('You already own') ||
             pageText.includes('Purchased') ||
+            pageText.includes('Item Owned') ||
             pageText.includes('success') ||
             pageText.includes('comprado') ||
             pageText.includes('owned')) {
