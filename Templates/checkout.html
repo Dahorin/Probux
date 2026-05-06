@@ -108,6 +108,9 @@
                     <div class="notification is-info is-light">
                         <p><i class="fas fa-info-circle"></i> <strong>Total a pagar: R$ {{ "%.2f"|format(total) }}</strong></p>
                         <p class="is-size-7 mt-2">Após realizar o pagamento, clique no botão abaixo para confirmar.</p>
+                        <p class="is-size-7 mt-2">
+                            <i class="fas fa-clock"></i> Tempo restante: <span id="countdown" style="font-weight: bold; color: #667eea;">15:00</span>
+                        </p>
                     </div>
 
                     {% if order_id %}
@@ -170,6 +173,13 @@
                 $notification.parentNode.removeChild($notification);
             });
         });
+
+        // Inicia o cronômetro de 15 minutos
+        const expirationTimestamp = {{ expiration_timestamp }} * 1000;
+        startCountdown(expirationTimestamp);
+
+        // Inicia verificação automática de pagamento a cada 5 segundos
+        startPaymentCheck();
     });
 
     function copyPixCode() {
@@ -177,6 +187,52 @@
         pixCode.select();
         document.execCommand('copy');
         alert('Código Pix copiado!');
+    }
+
+    function startCountdown(expirationTimestamp) {
+        const countdownElement = document.getElementById('countdown');
+
+        function updateCountdown() {
+            const now = Date.now();
+            const timeLeft = expirationTimestamp - now;
+
+            if (timeLeft <= 0) {
+                countdownElement.textContent = '00:00';
+                countdownElement.style.color = '#ff0000';
+                // Cancela o pedido automaticamente
+                fetch(`/cancel_order/{{ order_id }}`, { method: 'GET' })
+                    .then(() => {
+                        alert('Tempo de pagamento expirado! O pedido foi cancelado.');
+                        window.location.href = '/meus_pedidos';
+                    });
+                return;
+            }
+
+            const minutes = Math.floor(timeLeft / 60000);
+            const seconds = Math.floor((timeLeft % 60000) / 1000);
+            countdownElement.textContent = minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
+
+            if (timeLeft < 60000) { // Menos de 1 minuto
+                countdownElement.style.color = '#ff0000';
+            }
+
+            setTimeout(updateCountdown, 1000);
+        }
+
+        updateCountdown();
+    }
+
+    function startPaymentCheck() {
+        setInterval(() => {
+            fetch(`/check_payment/{{ order_id }}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'paid' || data.status === 'delivered') {
+                        window.location.reload(); // Recarrega a página para mostrar o status atualizado
+                    }
+                })
+                .catch(error => console.error('Erro ao verificar pagamento:', error));
+        }, 5000); // Verifica a cada 5 segundos
     }
 </script>
 </body>

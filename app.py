@@ -49,6 +49,13 @@ app.register_blueprint(main)
 
 with app.app_context():
     db.create_all()
+    # Update price_per_robux to 0.034 for all products
+    from models import Product
+    products = Product.query.all()
+    for product in products:
+        if product.price_per_robux != 0.034:
+            product.price_per_robux = 0.034
+    db.session.commit()
 
 if __name__ == '__main__':
     app.run(debug=True)

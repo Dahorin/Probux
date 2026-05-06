@@ -90,21 +90,70 @@
             0%, 100% { transform: scale(1); }
             50% { transform: scale(1.05); }
         }
+        /* Dark Mode Styles */
+        body.dark-mode {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%) !important;
+            color: #ffffff;
+        }
+        body.dark-mode .navbar {
+            background: rgba(30,30,46,0.95) !important;
+            color: #ffffff;
+        }
+        body.dark-mode .navbar-item {
+            color: #ffffff !important;
+        }
+        body.dark-mode .navbar-item:hover {
+            background: rgba(102,126,234,0.2) !important;
+        }
+        body.dark-mode .title,
+        body.dark-mode .subtitle {
+            color: #ffffff !important;
+        }
+        body.dark-mode .card {
+            background: rgba(30,30,46,0.9) !important;
+            color: #ffffff;
+        }
+        body.dark-mode .card-content {
+            color: #ffffff;
+        }
+        body.dark-mode .button.is-light {
+            background-color: #2a2a3e !important;
+            color: #ffffff !important;
+            border-color: #667eea;
+        }
+        body.dark-mode .notification.is-light {
+            background-color: rgba(30,30,46,0.9) !important;
+            color: #ffffff;
+        }
+        body.dark-mode .box {
+            background-color: rgba(30,30,46,0.9) !important;
+            color: #ffffff;
+        }
+        body.dark-mode .input {
+            background-color: #2a2a3e !important;
+            color: #ffffff !important;
+            border-color: #667eea;
+        }
+        body.dark-mode .label {
+            color: #ffffff !important;
+        }
     </style>
 </head>
 <body>
 <nav class="navbar" role="navigation" aria-label="main navigation">
-    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="navbarBasicExample">
-        <span aria-hidden="true"></span>
-        <span aria-hidden="true"></span>
-        <span aria-hidden="true"></span>
-    </a>
+    <div class="navbar-brand">
+        <a class="navbar-item" href="/">
+            <img src="{{ url_for('static', filename='Logo/Logo sem fundo.png') }}" alt="Probux Logo" style="max-height: 50px;">
+        </a>
+        <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="navbarBasicExample">
+            <span aria-hidden="true"></span>
+            <span aria-hidden="true"></span>
+            <span aria-hidden="true"></span>
+        </a>
+    </div>
 
     <div id="navbarBasicExample" class="navbar-menu">
         <div class="navbar-start">
-            <a class="navbar-item" href="/">
-                <i class="fas fa-home"></i>&nbsp; Home
-            </a>
             <a class="navbar-item" href="/cart">
                 <i class="fas fa-shopping-cart"></i>&nbsp; Carrinho
             </a>
@@ -124,9 +173,12 @@
         <div class="navbar-end">
             <div class="navbar-item">
                 <div class="buttons">
+                    <button class="button is-light" id="theme-toggle" onclick="toggleTheme()">
+                        <i class="fas fa-moon"></i>&nbsp; <span id="theme-text">Dark</span>
+                    </button>
                     {% if roblox_balance is not none %}
                         <div class="robux-balance mr-3">
-                            <i class="fas fa-coins"></i> {{ roblox_balance }} Robux disponível
+                            <img src="{{ url_for('static', filename='Icon/roblox.png') }}" alt="Robux" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 5px;"> {{ roblox_balance }} Robux em Estoque
                         </div>
                     {% endif %}
                     {% if current_user.is_authenticated %}
@@ -176,15 +228,23 @@
                 <div class="column is-4-desktop is-6-tablet is-12-mobile">
                     <div class="card product-card">
                         <div class="card-image">
-                            <figure class="image is-4by3" style="background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; padding: 20px;">
+                            <figure class="image is-4by3" style="background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; padding: 20px; text-align: center;">
                                 {% if product.is_gamepass %}
-                                    <img src="{{ url_for('static', filename='Gamepass/Gamepass.png') }}" alt="Gamepass" style="max-height: 80%; max-width: 80%; object-fit: contain;">
+                                    {% if current_user.is_authenticated %}
+                                        <a href="/gamepass_form/{{ product.id }}" style="display: block;">
+                                            <img src="{{ url_for('static', filename='Gamepass/Gamepass.png') }}" alt="Gamepass" style="max-height: 90%; max-width: 90%; object-fit: contain; margin: 0 auto;">
+                                        </a>
+                                    {% else %}
+                                        <a href="/login" style="display: block;">
+                                            <img src="{{ url_for('static', filename='Gamepass/Gamepass.png') }}" alt="Gamepass" style="max-height: 90%; max-width: 90%; object-fit: contain; margin: 0 auto;">
+                                        </a>
+                                    {% endif %}
                                 {% else %}
-                                <div style="text-align: center; color: white;">
-                                    <i class="fas fa-coins fa-3x"></i>
-                                    <p class="is-size-4 has-text-weight-bold mt-2">{{ product.name.split(' ')[0] }}</p>
-                                    <p class="is-size-5">ROBUX</p>
-                                </div>
+                                    <div style="text-align: center; color: white;">
+                                        <i class="fas fa-coins fa-3x"></i>
+                                        <p class="is-size-4 has-text-weight-bold mt-2">{{ product.name.split(' ')[0] }}</p>
+                                        <p class="is-size-5">ROBUX</p>
+                                    </div>
                                 {% endif %}
                             </figure>
                         </div>
@@ -203,7 +263,17 @@
                             {% endif %}
                         </div>
                         <footer class="card-footer">
-                            {% if current_user.is_authenticated %}
+                            {% if product.is_gamepass %}
+                                {% if current_user.is_authenticated %}
+                                    <a href="/gamepass_form/{{ product.id }}" class="card-footer-item has-text-weight-bold" style="color: #667eea;">
+                                        <i class="fas fa-external-link-alt"></i>&nbsp; Comprar Gamepass
+                                    </a>
+                                {% else %}
+                                    <a href="/login" class="card-footer-item has-text-weight-bold" style="color: #667eea;">
+                                        <i class="fas fa-sign-in-alt"></i>&nbsp; Faça login para comprar
+                                    </a>
+                                {% endif %}
+                            {% elif current_user.is_authenticated %}
                                 <a href="/add_to_cart/{{ product.id }}" class="card-footer-item has-text-weight-bold" style="color: #667eea;">
                                     <i class="fas fa-cart-plus"></i>&nbsp; Adicionar ao Carrinho
                                 </a>
@@ -241,7 +311,34 @@
                 $target.classList.toggle('is-active');
             });
         });
+
+        // Theme toggle functionality
+        const currentTheme = localStorage.getItem('theme') || 'light';
+        if (currentTheme === 'dark') {
+            document.body.classList.add('dark-mode');
+            document.getElementById('theme-text').textContent = 'Light';
+            document.getElementById('theme-toggle').querySelector('i').className = 'fas fa-sun';
+        }
     });
+
+    function toggleTheme() {
+        const body = document.body;
+        const themeToggle = document.getElementById('theme-toggle');
+        const themeIcon = themeToggle.querySelector('i');
+        const themeText = document.getElementById('theme-text');
+
+        if (body.classList.contains('dark-mode')) {
+            body.classList.remove('dark-mode');
+            themeIcon.className = 'fas fa-moon';
+            themeText.textContent = 'Dark';
+            localStorage.setItem('theme', 'light');
+        } else {
+            body.classList.add('dark-mode');
+            themeIcon.className = 'fas fa-sun';
+            themeText.textContent = 'Light';
+            localStorage.setItem('theme', 'dark');
+        }
+    }
 </script>
 </body>
 </html>

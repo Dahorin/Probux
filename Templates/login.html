@@ -58,19 +58,35 @@
     </style>
 </head>
 <body>
+<nav class="navbar" role="navigation" aria-label="main navigation">
+    <div class="navbar-brand">
+        <a class="navbar-item" href="/">
+            <img src="{{ url_for('static', filename='Logo/Logo sem fundo.png') }}" alt="Probux Logo" style="max-height: 50px;">
+        </a>
+    </div>
+
+    <div class="navbar-menu">
+        <div class="navbar-end">
+            <div class="navbar-item">
+                <div class="buttons">
+                    <a class="button is-info" href="/register" style="background-color: #667eea;">
+                        <strong><i class="fas fa-user-plus"></i> Cadastrar</strong>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</nav>
+
     <section class="section">
         <div class="container">
             <div class="columns is-centered">
                 <div class="column is-5-tablet is-4-desktop">
                     <div class="box">
                         <div class="has-text-centered mb-5">
-                            <div class="has-text-centered mb-5">
-                            <img src="{{ url_for('static', filename='Logo/Logo.png') }}" alt="Probux Logo" width="200" class="mb-3">
                             <h1 class="title is-3 has-text-weight-bold" style="color: #667eea;">
                                 <i class="fas fa-sign-in-alt"></i> Login
                             </h1>
-                            <p class="subtitle is-6 has-text-grey">Acesse sua conta no Probux</p>
-                        </div>
                             <p class="subtitle is-6 has-text-grey">Acesse sua conta no Probux</p>
                         </div>
 

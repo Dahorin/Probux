@@ -55,7 +55,7 @@ class Product(db.Model):
     description = db.Column(db.Text, nullable=True)
     image_url = db.Column(db.String(500), nullable=True)
     is_gamepass = db.Column(db.Boolean, default=False)
-    price_per_robux = db.Column(db.Float, default=0.05)
+    price_per_robux = db.Column(db.Float, default=0.034)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     cart_items = db.relationship('CartItem', backref='product', lazy=True, cascade='all, delete-orphan')
 

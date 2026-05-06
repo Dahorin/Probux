@@ -137,6 +137,9 @@
                             <div class="notification is-info is-light">
                                 <p><i class="fas fa-info-circle"></i> <strong>Total a pagar: R$ {{ "%.2f"|format(order.total) }}</strong></p>
                                 <p class="is-size-7 mt-2">Após realizar o pagamento, clique no botão abaixo para confirmar.</p>
+                                <p class="is-size-7 mt-2">
+                                    <i class="fas fa-clock"></i> Tempo restante: <span id="countdown" style="font-weight: bold; color: #667eea;">15:00</span>
+                                </p>
                             </div>
 
                             <form method="POST" action="{{ url_for('main.confirm_order', order_id=order.id) }}" onsubmit="return confirm('Confirma que já realizou o pagamento de R$ {{ "%.2f"|format(order.total) }}?');">
@@ -184,6 +187,9 @@
                                 <p class="mt-3">
                                     {% if order.status == 'delivered' %}
                                         Sua gamepass foi entregue com sucesso! Agora você já pode usá-la no Roblox.
+                                        <br><br>
+                                        <strong>IMPORTANTE:</strong> Verifique se os Robux estão pendentes em:
+                                        <a href="https://www.roblox.com/transactions" target="_blank">https://www.roblox.com/transactions</a>
                                     {% else %}
                                         Seu pagamento foi confirmado e sua gamepass está sendo entregue.
                                     {% endif %}
@@ -266,19 +272,32 @@
                 {% if order.status in ['pending', 'payment_claimed'] and order.mp_payment_id %}
                 <div class="notification is-info is-light mt-3" id="autoCheckNotification">
                     <p><i class="fas fa-sync-alt fa-spin"></i> Verificando pagamento a cada 5 segundos...</p>
+                    {% if order.status == 'pending' %}
+                    <p class="is-size-7 mt-2">
+                        <i class="fas fa-clock"></i> Tempo restante: <span id="countdown" style="font-weight: bold; color: #667eea;">15:00</span>
+                    </p>
+                    {% endif %}
                 </div>
                 <script>
+                    // Usa o timestamp de expiração calculado no backend
+                    const expirationTimestamp = {{ expiration_timestamp }};
+
+                    // Inicia o cronômetro se o pedido estiver pendente
+                    if ("{{ order.status }}" === "pending") {
+                        startCountdown(expirationTimestamp * 1000);
+                    }
+
                     // Verifica o status do pagamento automaticamente
                     let checkInterval = setInterval(function() {
                         fetch("{{ url_for('main.check_payment', order_id=order.id) }}")
                             .then(response => response.json())
                             .then(data => {
-                                if (data.status === 'paid') {
+                                if (data.status === 'paid' || data.status === 'delivered') {
                                     clearInterval(checkInterval);
                                     document.getElementById('autoCheckNotification').innerHTML =
                                         '<p><i class="fas fa-check-circle" style="color: #48c774;"></i> <strong>Pagamento confirmado!</strong> Redirecionando...</p>';
                                     setTimeout(() => {
-                                        window.location.href = data.redirect;
+                                        window.location.reload();
                                     }, 2000);
                                 } else if (data.status === 'cancelled') {
                                     clearInterval(checkInterval);
@@ -293,6 +312,39 @@
                     window.addEventListener('beforeunload', function() {
                         clearInterval(checkInterval);
                     });
+
+                    function startCountdown(expirationTimestamp) {
+                        const countdownElement = document.getElementById('countdown');
+
+                        function updateCountdown() {
+                            const now = Date.now() / 1000;
+                            const timeLeft = expirationTimestamp - now;
+
+                            if (timeLeft <= 0) {
+                                countdownElement.textContent = '00:00';
+                                countdownElement.style.color = '#ff0000';
+                                // Cancela o pedido automaticamente
+                                fetch('/cancel_order/{{ order.id }}', { method: 'GET' })
+                                    .then(() => {
+                                        alert('Tempo de pagamento expirado! O pedido foi cancelado.');
+                                        window.location.href = '/meus_pedidos';
+                                    });
+                                return;
+                            }
+
+                            const minutes = Math.floor(timeLeft / 60);
+                            const seconds = Math.floor(timeLeft % 60);
+                            countdownElement.textContent = minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
+
+                            if (timeLeft < 60) { // Menos de 1 minuto
+                                countdownElement.style.color = '#ff0000';
+                            }
+
+                            setTimeout(updateCountdown, 1000);
+                        }
+
+                        updateCountdown();
+                    }
                 </script>
                 {% endif %}
             </div>

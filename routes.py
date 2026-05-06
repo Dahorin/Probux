@@ -551,7 +551,7 @@ def checkout():
         db.session.delete(item)
 
     # Cria pagamento Pix no Mercado Pago
-    description = f"Pedido Probux #{order.id}"
+    description = f"Pedido PROBUX LTDA #{order.id}"
     mp_payment = mercadopago_utils.create_pix_payment(
         total,
         description,
@@ -580,8 +580,13 @@ def checkout():
             qr_url = ""
         db.session.commit()
 
+    # Calcula o tempo de expiração (15 minutos após criação)
+    expiration_time = order.created_at + timedelta(minutes=15)
+    expiration_timestamp = int(expiration_time.timestamp())
+
     return render_template('checkout.html', total=total, qr_code=qr_url, pix_code=pix_code,
-                           mp_payment=mp_payment, order_id=order.id, cart_items=cart_items)
+                           mp_payment=mp_payment, order_id=order.id, cart_items=cart_items,
+                           expiration_timestamp=expiration_timestamp)
 
 @main.route('/confirm_payment', methods=['POST'])
 @login_required
@@ -620,14 +625,11 @@ def confirm_payment():
         )
         db.session.add(order_item)
         db.session.delete(item)
-        db.session.delete(item)
 
     db.session.commit()
     flash("Pedido realizado! Aguardando confirmação do pagamento.", "success")
     return redirect(url_for('main.order_details', order_id=order.id))
 
-
-@main.route('/order/<int:order_id>')
 
 @main.route('/order/<int:order_id>')
 @login_required
@@ -645,7 +647,9 @@ def order_details(order_id):
         else:
             qr_url = f"https://quickchart.io/qr?size=250&text={urllib.parse.quote(order.pix_code)}"
 
-    return render_template('order.html', order=order, qr_url=qr_url)
+    expiration_time = order.created_at + timedelta(minutes=15)
+    expiration_timestamp = int(expiration_time.timestamp())
+    return render_template('order.html', order=order, qr_url=qr_url, expiration_timestamp=expiration_timestamp)
 
 @main.route('/confirm_order/<int:order_id>', methods=['POST'])
 @login_required

@@ -209,6 +209,9 @@ Data de entrega: {order.delivered_at.strftime('%d/%m/%Y às %H:%M')}
 
 Agora você já pode usar sua gamepass no Roblox!
 
+IMPORTANTE: Verifique se os Robux estão pendentes em:
+https://www.roblox.com/transactions
+
 Atenciosamente,
 Equipe Probux
 '''
