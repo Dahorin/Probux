@@ -70,25 +70,18 @@ def is_valid_email(email):
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
-def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
-    """Extrai o ID da Gamepass do link e verifica o preço via API/HTML do Roblox."""
+def get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent=0):
+    """Extract gamepass ID and return ORIGINAL price (without account discount)."""
     try:
         match = re.search(r'game-pass/(\d+)', gamepass_link)
         if not match:
-            return None, None, None, "Link da Gamepass inválido"
-
+            return None, None, None, None, "Invalid link"
+        
         gamepass_id = match.group(1)
-
-        # Cria sessão e injeta o cookie
         s = requests.Session()
         s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
-        s.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-        })
-
-        # Pega XSRF token
+        s.headers.update({'User-Agent': 'Mozilla/5.0'})
+        
         try:
             r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
             xsrf = r.headers.get('X-CSRF-TOKEN')
@@ -96,61 +89,65 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie):
                 s.headers['X-CSRF-TOKEN'] = xsrf
         except:
             pass
-
-        # Pega o saldo da conta
-        balance = None
+        
+        # Try catalog API
         try:
-            resp_balance = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
-            if resp_balance.status_code == 200:
-                balance = resp_balance.json().get('robux', 0)
-        except:
-            pass
-
-        # Tenta primeiro via API de catálogo (POST) - requer cookie
-        try:
-            catalog_url = 'https://catalog.roblox.com/v1/catalog/items/details'
-            resp = s.post(catalog_url, json={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]}, timeout=15)
+            resp = s.post('https://catalog.roblox.com/v1/catalog/items/details',
+                         json={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]}, timeout=15)
             if resp.status_code == 200:
-                data = resp.json()
-                items = data.get('data', [])
+                items = resp.json().get('data', [])
                 if items:
                     price = items[0].get('price') or items[0].get('priceInRobux')
                     if price is not None:
-                        return int(price), False, balance, None
-        except:
-            pass
-
-        # Fallback: usa a URL original com slug
+                        if discount_percent > 0:
+                            original = round(price / (1 - discount_percent))
+                            print(f'[ROBLOX] Price returned: {price}, Original adjusted: {original}')
+                            return int(original), False, None, None
+                        return int(price), False, None, None
+        except Exception as e:
+            print(f'[ROBLOX] Catalog error: {e}')
+        
+        # Fallback: HTML - search for data-expected-price="NUMBER"
         try:
-            page_url = gamepass_link  # usa a URL original com slug
-            resp = s.get(page_url, timeout=15, allow_redirects=True)
+            resp = s.get(gamepass_link, timeout=15, allow_redirects=True)
             if resp.status_code == 200:
                 html = resp.text
-
-                # Verifica se já possui a gamepass
-                if ('Você possui esse item' in html or
-                    'Item Owned' in html or
-                    'You already own' in html):
-                    return None, True, balance, "Você já possui esta Gamepass! Não é possível comprar o mesmo passe duas vezes."
-
+                
+                if 'already own' in html.lower() or 'você possui' in html.lower():
+                    return None, True, None, "You already own this item!"
+                
+                # Search for data-expected-price="NUMBER"
+                m = re.search(r'data-expected-price="(\d+)"', html)
+                if m:
+                    price = int(m.group(1))
+                    if discount_percent > 0:
+                        original = round(price / (1 - discount_percent))
+                        print(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
+                        return int(original), False, None, None
+                    return price, False, None, None
+                
+                # Alternative patterns
                 patterns = [
                     r'"price"\s*:\s*(\d+)',
-                    r'"PriceInRobux"\s*:\s*(\d+)',
-                    r'data-expected-price="(\d+)"',
+                    r'"priceInRobux"\s*:\s*(\d+)',
                     r'data-price="(\d+)"',
                     r'(\d+)\s*Robux',
                 ]
                 for p in patterns:
                     m = re.search(p, html)
                     if m:
-                        return int(m.group(1)), False, balance, None
-        except:
-            pass
-
-        return None, None, balance, "Não foi possível encontrar o preço da Gamepass. Verifique se ela está pública e à venda."
-
+                        price = int(m.group(1))
+                        if discount_percent > 0:
+                            original = round(price / (1 - discount_percent))
+                            print(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
+                            return int(original), False, None, None
+                        return price, False, None, None
+        except Exception as e:
+            print(f'[ROBLOX] HTML error: {e}')
+        
+        return None, None, None, "Could not find price."
     except Exception as e:
-        return None, None, None, f"Erro ao verificar Gamepass: {str(e)}"
+        return None, None, None, f"Error: {str(e)}"
 
 def generate_pix_code(pix_key, total):
     """Gera PIX Code (BR Code / EMV) válido segundo padrão do BC."""
@@ -414,8 +411,9 @@ def gamepass_form(product_id):
 
         # Verifica o preço real da Gamepass no Roblox
         roblox_cookie = current_app.config.get('ROBLOX_COOKIE') or os.getenv('ROBLOX_COOKIE')
+        discount_percent = current_app.config.get('DISCOUNT_PERCENT', 0)
         if roblox_cookie:
-            actual_price, already_owned, balance, error = get_roblox_gamepass_price(gamepass_link, roblox_cookie)
+            actual_price, already_owned, balance, error = get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent)
             if already_owned:
                 flash(f"Você já possui esta Gamepass! Não é possível comprar o mesmo passe duas vezes.", "error")
                 return render_template('gamepass_form.html', product=product)
@@ -429,8 +427,16 @@ def gamepass_form(product_id):
                     flash(f"Erro ao verificar Gamepass: {error}", "error")
                 return render_template('gamepass_form.html', product=product)
             elif actual_price is not None and actual_price != robux_amount:
-                flash(f"O preço informado ({robux_amount} Robux) não corresponde ao preço da Gamepass no Roblox ({actual_price} Robux). Por favor, verifique.", "error")
-                return render_template('gamepass_form.html', product=product)
+                # Verifica se o preço digitado é o original (sem desconto da conta)
+                discount_percent = current_app.config.get('DISCOUNT_PERCENT', 0)
+                discounted_price = int(actual_price * (1 - discount_percent))
+                if robux_amount != actual_price and robux_amount != discounted_price:
+                    flash(f"O preço informado ({robux_amount} Robux) não corresponde ao preço da Gamepass no Roblox ({actual_price} Robux). Por favor, verifique.", "error")
+                    return render_template('gamepass_form.html', product=product)
+                # Se o usuário digitou o preço com desconto, ajusta para o original
+                if robux_amount == discounted_price:
+                    robux_amount = actual_price
+                    flash(f"Preço ajustado para o valor original da Gamepass: {actual_price} Robux", "info")
             # Verifica se a conta tem saldo suficiente
             if balance is not None and robux_amount > balance:
                 flash(f"Saldo insuficiente! A conta do Roblox tem apenas {balance} Robux disponível, mas a Gamepass custa {robux_amount} Robux.", "error")

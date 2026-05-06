@@ -25,6 +25,10 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://
 # Roblox cookie para verificação de Gamepass
 app.config['ROBLOX_COOKIE'] = os.getenv('ROBLOX_COOKIE', '')
 
+# Desconto da conta banco (10% = 0.10)
+DISCOUNT_PERCENT = float(os.getenv('DISCOUNT_PERCENT', '0'))
+app.config['DISCOUNT_PERCENT'] = DISCOUNT_PERCENT
+
 # Configurações do Flask-Mail via variáveis de ambiente (SMTP Umbler)
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.umbler.com')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))

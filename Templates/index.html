@@ -30,17 +30,20 @@
             transform: translateY(-2px);
             color: #667eea !important;
         }
+        .navbar-burger {
             transition: all 0.3s ease;
         }
+        .navbar-burger span {
             background: rgba(102,126,234,0.1) !important;
         }
+        .navbar-burger.is-active span:nth-child(1) {
             transform: translateY(5px) rotate(45deg);
         }
+        .navbar-burger.is-active span:nth-child(2) {
             opacity: 0;
         }
+        .navbar-burger.is-active span:nth-child(3) {
             transform: translateY(-5px) rotate(-45deg);
-        }
-            transition: all 0.3s ease;
         }
         .button {
             transition: all 0.3s ease !important;
