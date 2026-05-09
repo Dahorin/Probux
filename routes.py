@@ -918,3 +918,43 @@ def delete_all_paid_orders():
     db.session.commit()
     flash(f"{count} pedido(s) excluído(s) com sucesso!", "success")
     return redirect(url_for('main.meus_pedidos'))
+
+
+@main.route('/manual_deliver/<int:order_id>', methods=['POST'])
+@login_required
+def manual_deliver(order_id):
+    """Força a entrega de um pedido manualmente pelo botão na interface."""
+    order = Order.query.get_or_404(order_id)
+    if order.user_id != current_user.id:
+        flash("Acesso negado!", "error")
+        return redirect(url_for('main.meus_pedidos'))
+
+    if order.status not in ['paid', 'payment_claimed']:
+        flash(f"Pedido não está em estado válido para entrega (status: {order.status}).", "error")
+        return redirect(url_for('main.order_details', order_id=order.id))
+
+    from mercadopago_utils import deliver_gamepasses
+    success, msg = deliver_gamepasses(order)
+
+    if success:
+        flash(f"✅ Entrega forçada realizada com sucesso! {msg}", "success")
+    else:
+        flash(f"❌ Erro na entrega forçada: {msg}", "error")
+
+    return redirect(url_for('main.order_details', order_id=order.id))
+
+
+@main.route('/delivery_logs')
+@login_required
+def delivery_logs():
+    """Mostra os logs de entrega."""
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs', 'delivery.log')
+    logs = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                logs = f.readlines()
+                logs.reverse()  # Mais recente primeiro
+        except Exception:
+            logs = ["Erro ao ler o arquivo de logs."]
+    return render_template('delivery_logs.html', logs=logs)

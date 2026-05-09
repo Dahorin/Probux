@@ -170,6 +170,16 @@
                                 </div>
                             </div>
                         </div>
+                    {% if order.status in ['paid', 'payment_claimed'] %}
+                        <div class="box has-text-centered">
+                            <form method="POST" action="{{ url_for('main.manual_deliver', order_id=order.id) }}" onsubmit="return confirm('Forçar entrega? Isso tentará comprar a gamepass agora.');">
+                                <button type="submit" class="button is-medium" style="background-color: #ffdd57; color: #333;">
+                                    <i class="fas fa-truck"></i>&nbsp; Forçar Entrega Manual
+                                </button>
+                            </form>
+                        </div>
+                    {% endif %}
+
                     {% elif order.status in ['paid', 'delivered'] %}
                         <div class="box has-text-centered">
                             <div class="notification is-success is-light">
@@ -269,7 +279,7 @@
                     </div>
                 </div>
 
-                {% if order.status in ['pending', 'payment_claimed'] and order.mp_payment_id %}
+                {% if order.status in ['pending', 'payment_claimed', 'paid'] and order.mp_payment_id %}
                 <div class="notification is-info is-light mt-3" id="autoCheckNotification">
                     <p><i class="fas fa-sync-alt fa-spin"></i> Verificando pagamento a cada 5 segundos...</p>
                     {% if order.status == 'pending' %}
