@@ -65,8 +65,8 @@ echo "  Use o comando: cp /caminho/do/.env $APP_DIR/.env"
 # Configurar Nginx
 echo "[8/10] Configurando Nginx..."
 # Substituir o placeholder no arquivo de configuração
-sudo sed -i "s|SEU_DOMINIO_AQUI.COM|$DOMINIO|g" nginx.conf
-sudo cp nginx_conf /etc/nginx/sites-available/probux
+sed -i "s|SEU_DOMINIO_AQUI\.COM|$DOMINIO|g" nginx_conf.txt
+sudo cp nginx_conf.txt /etc/nginx/sites-available/probux
 sudo ln -sf /etc/nginx/sites-available/probux /etc/nginx/sites-enabled/probux
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t

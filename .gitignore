@@ -42,13 +42,12 @@ env/
 Thumbs.db
 
 # Debug / teste
-*.png
+logs/*.png
 debug-*.png
 *.bak
 
 # Logs
 *.log
-logs/
 
 # Node
 node_modules/
