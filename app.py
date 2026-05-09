@@ -66,4 +66,4 @@ if __name__ == '__main__':
     # Nunca use debug=True em produção!
     import os
     is_production = os.getenv('FLASK_ENV', 'production') == 'production'
-    app.run(debug=not is_production, host='0.0.0.0', port=5000)
+    app.run(debug=not is_production, host='0.0.0.0', port=80)
