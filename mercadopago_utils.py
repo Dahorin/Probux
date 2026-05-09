@@ -5,7 +5,11 @@ import requests
 import time
 import json
 import logging
+import socket
+import ssl
+import struct
 from datetime import datetime
+from urllib3.util.connection import allowed_gai_family
 
 # Configurações do Mercado Pago
 MP_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', '')
@@ -16,16 +20,26 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'del
 
 # Logger
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(atime)s - %(message)s')
+
+# ============================================================
+# Mapeamento de IPs diretos (evita necessidade de DNS)
+# Atualize periodicamente com: nslookup api.roblox.com
+# ============================================================
+# api.roblox.com -> Fastly CDN (IP pode mudar)
+# Economytest é alternativa para testes
+ROBLOX_API_IP = os.getenv('ROBLOX_API_IP', 'api.roblox.com')  # Se DNS bloquear, use IP direto
+ECONOMY_API_IP = os.getenv('ECONOMY_API_IP', 'economy.roblox.com')
+
+# Mercado Pago API
+MP_API_HOST = os.getenv('MP_API_HOST', 'api.mercadopago.com')
 
 
 def _ensure_log_dir():
-    """Garante que o diretório de logs existe."""
     os.makedirs(os.path.dirname(LOG_FILE) if os.path.dirname(LOG_FILE) else 'logs', exist_ok=True)
 
 
 def _log(message):
-    """Faz log em arquivo e no print."""
     _ensure_log_dir()
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     log_line = f"[{timestamp}] {message}"
@@ -34,188 +48,242 @@ def _log(message):
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(log_line + '\n')
+    except Exception:
+        pass
+
+
+# ============================================================
+# SOLUÇÃO DNS: Usa DOH (DNS over HTTPS) para resolver nomes
+# Funciona mesmo quando DNS tradicional está bloqueado
+# ============================================================
+def _resolve_via_doh(hostname):
+    """Resolve hostname usando DNS over HTTPS (Cloudflare)."""
+    try:
+        doh_url = f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A"
+        resp = requests.get(doh_url, timeout=5, headers={
+            'Accept': 'application/dns-json'
+        })
+        if resp.status_code == 200:
+            data = resp.json()
+            answers = data.get('Answer', [])
+            if answers:
+                ip = answers[0].get('data', '')
+                _log(f"[DNS] {hostname} -> {ip} (via DOH)")
+                return ip
     except Exception as e:
-        print(f"[WARN] Não foi possível salvar log: {e}")
+        _log(f"[DNS] DOH falhou para {hostname}: {e}")
+    return None
+
+
+def _requests_session_with_dns():
+    """Cria sessão requests que resolve DNS via DOH."""
+    session = requests.Session()
+
+    # Monkey-patch para resolver DNS via DOH
+    original_send = session.send
+
+    def patched_send(request, **kwargs):
+        # Resolve o hostname antes
+        parsed_url = request.url.replace('https://', '').replace('http://', '').split('/')[0]
+        if ':' in parsed_url:
+            hostname = parsed_url.split(':')[0]
+        else:
+            hostname = parsed_url
+
+        if hostname and not hostname[0].isdigit():
+            ip = _resolve_via_doh(hostname)
+            if ip:
+                # Substitui o host no URL pelo IP
+                new_url = request.url.replace(hostname, ip, 1)
+                request.prepare_url(new_url, {})
+                # Adiciona header Host original
+                request.headers['Host'] = hostname
+                _log(f"[DNS] Usando IP {ip} para {hostname}")
+
+        return original_send(request, **kwargs)
+
+    session.send = patched_send
+    return session
+
+
+# Cache da sessão
+_roblox_session = None
+
+
+def _get_roblox_session():
+    global _roblox_session
+    if _roblox_session is None:
+        cookie = ROBLOX_COOKIE or os.getenv('ROBLOX_COOKIE', '')
+        _roblox_session = requests.Session()
+
+        if cookie:
+            _roblox_session.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
+
+        _roblox_session.headers.update({
+            'User-Agent': 'Roblox/WinInet',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+        })
+
+        # Tenta obter X-CSRF
+        try:
+            resp = _roblox_session.post(
+                f'https://{ECONOMY_API_IP}/v2/logout',
+                json={}, timeout=10
+            )
+            xsrf = resp.headers.get('X-CSRF-TOKEN')
+            if xsrf:
+                _roblox_session.headers['X-CSRF-TOKEN'] = xsrf
+                _log(f"[ROBLOX] X-CSRF obtido")
+        except Exception as e:
+            _log(f"[ROBLOX] CSRF tentativa: {e}")
+
+    return _roblox_session
 
 
 def get_mp_sdk():
-    """Retorna o SDK do Mercado Pago inicializado."""
     if not MP_ACCESS_TOKEN:
         _log("[MP] Token não configurado!")
         return None
     try:
         sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
-        _log(f"[MP] SDK inicializado com sucesso")
+        _log("[MP] SDK inicializado")
         return sdk
     except Exception as e:
-        _log(f"[MP] Erro ao inicializar SDK: {e}")
+        _log(f"[MP] Erro SDK: {e}")
         return None
 
 
 def create_pix_payment(amount, description, order_id, payer_email=None):
-    """
-    Cria um pagamento Pix no Mercado Pago.
-    Retorna um dicionário com os dados do pagamento ou None em caso de erro.
-    """
-    sdk = get_mp_sdk()
-    if not sdk:
+    """Cria pagamento PIX via Mercado Pago API REST direta (sem SDK se necessário)."""
+    if not MP_ACCESS_TOKEN:
+        _log("[MP] Token não configurado!")
         return None
 
-    payment_data = {
+    _log(f"[MP] Criando PIX: R$ {amount:.2f} | Order #{order_id}")
+
+    payload = {
         "transaction_amount": float(amount),
         "description": description,
         "payment_method_id": "pix",
-        "payer": {
-            "email": payer_email or "test@test.com"
-        },
+        "payer": {"email": payer_email or "test@test.com"},
         "external_reference": str(order_id),
     }
 
-    # Adiciona webhook URL apenas se configurada
     webhook = os.getenv('MERCADO_PAGO_WEBHOOK_URL', '')
     if webhook:
-        payment_data["notification_url"] = webhook
-        _log(f"[MP] Webhook configurado: {webhook[:50]}...")
+        payload["notification_url"] = webhook
+        _log(f"[MP] Webhook: {webhook[:60]}...")
 
-    _log(f"[MP] Criando pagamento: R$ {amount:.2f} | Order #{order_id}")
-    _log(f"[MP] Dados enviados: {json.dumps(payment_data, indent=2)}")
-
+    # Tenta com SDK primeiro
     try:
-        payment_response = sdk.payment().create(payment_data)
-        _log(f"[MP] Resposta bruta: {json.dumps(payment_response, indent=2, default=str)[:2000]}")
+        sdk = get_mp_sdk()
+        if sdk:
+            resp = sdk.payment().create(payload)
+            _log(f"[MP] SDK Response: {json.dumps(resp, indent=2, default=str)[:2000]}")
 
-        # Verifica se a resposta é um dict
-        if not isinstance(payment_response, dict):
-            _log(f"[MP] ERRO: Resposta não é um dicionário: {type(payment_response)}")
-            return None
+            if isinstance(resp, dict):
+                if "response" in resp:
+                    data = resp["response"]
+                else:
+                    data = resp
 
-        # Tenta extrair dados do pagamento
-        # Versões mais novas do SDK retornam diretamente os dados
-        if "response" in payment_response:
-            payment = payment_response["response"]
-        elif "id" in payment_response:
-            payment = payment_response
-        else:
-            _log(f"[MP] ERRO: Resposta inesperada - chaves disponíveis: {list(payment_response.keys())}")
-            return None
+                if "id" in data:
+                    qr_data = data.get("point_of_interaction", {}).get("transaction_data", {})
+                    return {
+                        "id": str(data["id"]),
+                        "status": data.get("status", "pending"),
+                        "qr_code": qr_data.get("qr_code", ""),
+                        "qr_code_base64": qr_data.get("qr_code_base64", ""),
+                        "ticket_url": qr_data.get("ticket_url", ""),
+                    }
+            else:
+                _log(f"[MP] SDK retornou tipo inesperado: {type(resp)}")
+    except Exception as e:
+        _log(f"[MP] SDK falhou: {e}")
 
-        # Verifica se o pagamento foi criado
-        payment_id = payment.get("id")
-        if not payment_id:
-            _log(f"[MP] ERRO: Campo 'id' não encontrado na resposta")
-            _log(f"[MP] Conteúdo da 'response': {json.dumps(payment, indent=2, default=str)[:1000]}")
-            return None
-
-        # Extrai dados do QR Code
-        qr_data = payment.get("point_of_interaction", {}).get("transaction_data", {})
-        qr_code = qr_data.get("qr_code", "")
-        qr_code_base64 = qr_data.get("qr_code_base64", "")
-        ticket_url = qr_data.get("ticket_url", "")
-
-        status = payment.get("status", "pending")
-
-        _log(f"[MP] ✅ Pagamento criado! ID: {payment_id}, Status: {status}")
-
-        return {
-            "id": str(payment_id),
-            "status": status,
-            "qr_code": qr_code,
-            "qr_code_base64": qr_code_base64,
-            "ticket_url": ticket_url
+    # Fallback: REST direto
+    try:
+        headers = {
+            "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+            "X-Idempotency-Key": str(order_id),
+            "Accept": "application/json",
         }
 
-    except mercadopago.exceptions.MPError as e:
-        _log(f"[MP] SDK Error: {type(e).__name__}: {e}")
-        return None
-    except KeyError as e:
-        _log(f"[MP] KeyError ao processar resposta: {e}")
-        _log(f"[MP] Verifique se o token de acesso está correto e ativo")
+        _log(f"[MP] Tentando REST direto para api.mercadopago.com...")
+        resp = requests.post(
+            "https://api.mercadopago.com/v1/payments",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        _log(f"[MP] REST Response [{resp.status_code}]: {resp.text[:1500]}")
+
+        if resp.status_code == 200 or resp.status_code == 201:
+            data = resp.json()
+            if "id" in data:
+                qr_data = data.get("point_of_interaction", {}).get("transaction_data", {})
+                return {
+                    "id": str(data["id"]),
+                    "status": data.get("status", "pending"),
+                    "qr_code": qr_data.get("qr_code", ""),
+                    "qr_code_base64": qr_data.get("qr_code_base64", ""),
+                    "ticket_url": qr_data.get("ticket_url", ""),
+                }
+            else:
+                _log(f"[MP] REST 200 sem 'id': chaves={list(data.keys())}")
+                return None
+        elif resp.status_code == 401:
+            _log(f"[MP] ❌ 401 Unauthorized — Token inválido!")
+            return None
+        else:
+            _log(f"[MP] REST erro {resp.status_code}: {resp.text[:300]}")
+            return None
+
+    except requests.exceptions.ConnectionError:
+        _log(f"[MP] ❌ Conexão bloqueada — DNS/IP inacessível no plano gratuito")
         return None
     except Exception as e:
-        _log(f"[MP] Erro inesperado: {type(e).__name__}: {e}")
+        _log(f"[MP] REST falhou: {e}")
         return None
 
 
 def get_payment_status(payment_id):
-    """
-    Consulta o status de um pagamento no Mercado Pago.
-    Retorna o status do pagamento ou None em caso de erro.
-    """
+    if not MP_ACCESS_TOKEN:
+        return None
+
     sdk = get_mp_sdk()
-    if not sdk:
-        return None
+    if sdk:
+        try:
+            info = sdk.payment().get(payment_id)
+            if isinstance(info, dict) and "response" in info:
+                return info["response"].get("status")
+            elif isinstance(info, dict):
+                return info.get("status")
+        except Exception as e:
+            _log(f"[MP] SDK get error: {e}")
 
+    # Fallback REST
     try:
-        payment_info = sdk.payment().get(payment_id)
-        _log(f"[MP] Consulta pagamento {payment_id}: {json.dumps(payment_info, indent=2, default=str)[:500]}")
-
-        if isinstance(payment_info, dict) and "response" in payment_info:
-            status = payment_info["response"].get("status")
-        elif isinstance(payment_info, dict) and "status" in payment_info:
-            status = payment_info["status"]
-        else:
-            _log(f"[MP] Resposta inesperada para get_payment: {type(payment_info)}")
-            status = None
-
-        _log(f"[MP] Status do pagamento {payment_id}: {status}")
-        return status
-
-    except mercadopago.exceptions.MPError as e:
-        _log(f"[MP] SDK Error ao consultar: {type(e).__name__}: {e}")
-        return None
-    except Exception as e:
-        _log(f"[MP] Erro ao consultar pagamento {payment_id}: {type(e).__name__}: {e}")
-        return None
-
-
-def _get_xcsrf_token(roblox_cookie):
-    """Obtém o token X-CSRF do Roblox."""
-    session = requests.Session()
-    session.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
-    session.headers.update({
-        'User-Agent': 'Roblox/WinInet',
-        'Accept': 'application/json',
-    })
-
-    try:
-        resp = session.post(
-            'https://auth.roblox.com/v2/logout',
-            json={},
-            timeout=10
+        headers = {
+            "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
+            "Accept": "application/json",
+        }
+        resp = requests.get(
+            f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            headers=headers, timeout=15
         )
-        token = resp.headers.get('X-CSRF-TOKEN')
-        if token:
-            return token
+        if resp.status_code == 200:
+            return resp.json().get("status")
     except Exception as e:
-        _log(f"[ROBLOX] Erro ao obter X-CSRF: {e}")
-
+        _log(f"[MP] REST get status error: {e}")
     return None
 
 
-def _create_roblox_session(roblox_cookie):
-    """Cria uma sessão requests autenticada com o Roblox."""
-    session = requests.Session()
-    session.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
-
-    csrf_token = _get_xcsrf_token(roblox_cookie)
-    if csrf_token:
-        session.headers['X-CSRF-TOKEN'] = csrf_token
-
-    session.headers.update({
-        'User-Agent': 'Roblox/WinInet',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-    })
-
-    return session
-
-
 def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, max_retries=3):
-    """
-    Compra uma Gamepass usando a API do Roblox diretamente (Python puro).
-    Com retry automático em caso de falha.
-    Retorna uma tupla (sucesso, mensagem).
-    """
+    """Compra gamepass via API REST do Roblox (sem DNS se IP configurado)."""
     if not roblox_cookie:
         return (False, "Cookie do Roblox não configurado")
 
@@ -226,214 +294,137 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
     gamepass_id = match.group(1)
     last_error = "Erro desconhecido"
 
+    _log(f"[GAMEPASS] Iniciando compra: gamepass_id={gamepass_id}, max_retries={max_retries}")
+
     for attempt in range(1, max_retries + 1):
         try:
-            _log(f"[GAMEPASS] Tentativa {attempt}/{max_retries} - Gamepass {gamepass_id}")
+            session = _get_roblox_session()
 
-            session = _create_roblox_session(roblox_cookie)
+            # Endpoint alternativo que pode funcionar melhor
+            urls_to_try = [
+                f'https://{ROBLOX_API_IP}/v1/purchases/game-pass/{gamepass_id}',
+                f'https://economy.roblox.com/v1/purchases/game-pass/{gamepass_id}',
+                f'https://{ECONOMY_API_IP}/v1/purchases/game-pass/{gamepass_id}',
+            ]
 
-            # Verifica preço via catálogo
-            if expected_price:
+            success = False
+            for url in urls_to_try:
                 try:
-                    catalog_resp = session.post(
-                        'https://catalog.roblox.com/v1/catalog/items/details',
-                        json={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]},
-                        timeout=15
+                    _log(f"[GAMEPASS] Tentativa {attempt}: POST {url}")
+                    resp = session.post(
+                        url,
+                        json={'expectedPrice': int(expected_price) if expected_price else 1},
+                        timeout=30
                     )
-                    if catalog_resp.status_code == 200:
-                        items = catalog_resp.json().get('data', [])
-                        if items:
-                            actual_price = items[0].get('price') or items[0].get('priceInRobux')
-                            _log(f"[GAMEPASS] Preço real: {actual_price} Robux")
-                except Exception as e:
-                    _log(f"[GAMEPASS] Aviso: não foi verificar preço: {e}")
+                    _log(f"[GAMEPASS] Response [{resp.status_code}]: {resp.text[:300]}")
 
-            # Tenta a compra pela API
-            purchase_url = f'https://api.roblox.com/v1/purchases/game-pass/{gamepass_id}'
-            payload = {'expectedPrice': int(expected_price) if expected_price else 1}
+                    if resp.status_code == 200:
+                        try:
+                            data = resp.json()
+                            if data.get('success'):
+                                _log(f"[GAMEPASS] ✅ COMPRA SUCEDIDA!")
+                                return (True, f"Gamepass {gamepass_id} comprada via API!")
+                            else:
+                                last_error = data.get('error', data.get('errorMessage', 'Erro desconhecido'))
+                                _log(f"[GAMEPASS] API retornou erro: {last_error}")
+                        except Exception:
+                            if 'successfully' in resp.text.lower() or 'purchased' in resp.text.lower():
+                                return (True, "Gamepass comprada!")
+                            last_error = f"Resposta inválida: {resp.text[:200]}"
 
-            resp = session.post(purchase_url, json=payload, timeout=30)
-            _log(f"[GAMEPASS] API Response: {resp.status_code} - {resp.text[:300]}")
+                    elif resp.status_code == 403:
+                        last_error = "Acesso negado (403) — cookie inválido ou IP bloqueado"
+                        _log(f"[GAMEPASS] 403 — possivel cookie expirado")
+                        break  # Não tentar mais URLs neste attempt
 
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    if data.get('success'):
-                        _log(f"[GAMEPASS] ✅ COMPRA BEM SUCEDIDA!")
-                        return (True, f"Gamepass {gamepass_id} comprada com sucesso via API!")
-                    else:
-                        error_msg = data.get('error', data.get('errorMessage', 'Erro desconhecido'))
-                        last_error = f"Falha: {error_msg}"
-                except Exception:
-                    if 'successfully' in resp.text.lower() or 'purchased' in resp.text.lower():
-                        return (True, f"Gamepass comprada!")
-                    last_error = f"Resposta inesperada: {resp.text[:200]}"
+                    elif resp.status_code == 429:
+                        last_error = "Rate limit"
+                        _log(f"[GAMEPASS] Rate limit, aguardando...")
+                        break
 
-            elif resp.status_code == 403:
-                _log(f"[GAMEPASS] 403 - Possível bloqueio de IP ou cookie inválido")
-                last_error = "Acesso negado (403). IP pode estar bloqueado ou cookie expirado."
-                if attempt < max_retries:
-                    time.sleep(attempt * 5)
-                    continue
-                break
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    _log(f"[GAMEPASS] Falha na URL {url}: {e}")
+                    last_error = f"Conexão falhou para {url}"
+                    continue  # Tenta próxima URL
 
-            elif resp.status_code == 429:
-                wait_time = attempt * 10
-                _log(f"[GAMEPASS] Rate limit! Aguardando {wait_time}s...")
-                time.sleep(wait_time)
-                if attempt < max_retries:
-                    continue
-                last_error = "Rate limit excedido"
-                break
+            if resp.status_code in [403, 429]:
+                break  # Não retry para esses erros
 
-            elif resp.status_code in [400, 404, 422]:
-                last_error = f"Erro HTTP {resp.status_code}: {resp.text[:300]}"
-                break
-
-            else:
-                last_error = f"Erro HTTP {resp.status_code}: {resp.text[:200]}"
-                if attempt < max_retries:
-                    time.sleep(attempt * 3)
-                    continue
-                break
+            if attempt < max_retries:
+                wait = attempt * 3
+                _log(f"[GAMEPASS] Aguardando {wait}s antes de tentar novamente...")
+                time.sleep(wait)
 
         except requests.exceptions.Timeout:
-            last_error = "Timeout na API do Roblox"
-            if attempt < max_retries:
-                time.sleep(attempt * 3)
-                continue
-            break
-
+            last_error = "Timeout"
         except requests.exceptions.ConnectionError as e:
             last_error = f"Erro de conexão: {e}"
-            if attempt < max_retries:
-                time.sleep(attempt * 5)
-                continue
-            break
-
+            _log(f"[GAMEPASS] ❌ Conexão falhou: {e}")
+            break  # DNS bloqueado = não adianta retry
         except Exception as e:
-            last_error = f"Erro: {str(e)}"
-            break
+            last_error = f"Erro: {e}"
 
     _log(f"[GAMEPASS] ❌ Falha após {max_retries} tentativas: {last_error}")
     return (False, f"{last_error} (tentativas: {max_retries})")
 
 
-def _send_notification_email(user_email, order_id, success, message):
-    """Envia email de notificação sobre a entrega."""
-    try:
-        from flask import current_app
-        from flask_mail import Message
-        from extensions import mail as mail_ext
-        from models import User
-        from extensions import db
-
-        user = User.query.filter_by(email=user_email).first()
-        if not user:
-            return
-
-        if success:
-            subject = 'Gamepass Entregue - Probux'
-            body = f'''Olá {user.username},
-
-Sua gamepass foi entregue com sucesso!
-
-Pedido: #{order_id}
-Data de entrega: {datetime.utcnow().strftime('%d/%m/%Y às %H:%M')}
-
-Agora você já pode usar sua gamepass no Roblox!
-
-IMPORTANTE: Verifique se os Robux estão pendentes em:
-https://www.roblox.com/transactions
-
-Atenciosamente,
-Equipe Probux
-'''
-        else:
-            subject = 'Falha na Entrega - Probux'
-            body = f'''Olá {user.username},
-
-Houve um problema na entrega da sua gamepass do pedido #{order_id}.
-
-Erro: {message}
-
-Nossa equipe está ciente do problema e tentará novamente.
-
-Atenciosamente,
-Equipe Probux
-'''
-
-        msg = Message(subject, recipients=[user_email], body=body)
-        mail_ext.send(msg)
-        _log(f"[EMAIL] Notificação enviada para {user_email}")
-
-    except Exception as e:
-        _log(f"[EMAIL] Erro ao enviar email: {e}")
-
-
 def deliver_gamepasses(order, notify_user=True):
-    """
-    Entrega as Gamepasses de um pedido após pagamento confirmado.
-    Usa a API do Roblox diretamente (Python puro).
-    Retorna uma tupla (sucesso, mensagem).
-    """
     from models import OrderItem, User
     from extensions import db
     from flask import current_app
 
     gamepass_items = [item for item in order.items if item.product.is_gamepass]
-
     if not gamepass_items:
         return (False, "Nenhum item de gamepass no pedido")
 
     roblox_cookie = current_app.config.get('ROBLOX_COOKIE', '') or os.getenv('ROBLOX_COOKIE', '')
-
     if not roblox_cookie:
-        _log("[ENTREGA] ❌ Cookie do Roblox não configurado!")
-        return (False, "Cookie do Roblox não configurado no ambiente")
+        return (False, "Cookie do Roblox não configurado")
 
-    _log(f"[ENTREGA] 🚀 Iniciando entrega do pedido {order.id} ({len(gamepass_items)} itens)")
+    _log(f"[ENTREGA] Pedido {order.id}: {len(gamepass_items)} itens")
     results = []
     success_count = 0
 
     for item in gamepass_items:
-        gamepass_link = item.gamepass_link
-        robux_amount = item.robux_amount
-
-        if not gamepass_link:
-            results.append(f"Item {item.id}: Link da gamepass não informado")
+        if not item.gamepass_link or not item.robux_amount:
+            results.append(f"Item {item.id}: dados incompletos")
             continue
 
-        if not robux_amount:
-            results.append(f"Item {item.id}: Preço em Robux não informado")
-            continue
-
-        success, msg = buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=robux_amount)
-        results.append(f"Gamepass ({robux_amount} Robux): {msg}")
-
+        success, msg = buy_gamepass_with_cookie(
+            item.gamepass_link, roblox_cookie, item.robux_amount
+        )
+        results.append(f"Gamepass ({item.robux_amount} Robux): {msg}")
         if success:
             success_count += 1
-            _log(f"[ENTREGA] ✅ Item {item.id}: OK")
-        else:
-            _log(f"[ENTREGA] ❌ Item {item.id}: {msg}")
 
-    all_success = (success_count == len(gamepass_items)) and (len(gamepass_items) > 0)
+    all_success = success_count == len(gamepass_items) and len(gamepass_items) > 0
 
     if all_success:
         order.delivered = True
         order.delivered_at = datetime.utcnow()
         order.status = 'delivered'
-        db.session.commit()
-        _log(f"[ENTREGA] ✅ Pedido {order.id}: TODAS entregues!")
-        if notify_user:
-            _send_notification_email(order.user.email, order.id, True, "")
     else:
         order.status = 'paid'
-        db.session.commit()
-        failed_count = len(gamepass_items) - success_count
-        _log(f"[ENTREGA] ⚠️ Pedido {order.id}: {success_count}/{len(gamepass_items)} sucesso, {failed_count} falha(s)")
-        if notify_user and failed_count > 0:
-            failure_msg = "; ".join([r for r in results if "sucesso" not in r.lower()])
-            _send_notification_email(order.user.email, order.id, False, failure_msg[:500])
+
+    db.session.commit()
+    _log(f"[ENTREGA] Pedido {order.id}: {success_count}/{len(gamepass_items)} sucesso")
+
+    # Envia email
+    if notify_user:
+        try:
+            from flask_mail import Message
+            from extensions import mail as mail_ext
+            user = User.query.get(order.user_id)
+            if user:
+                if all_success:
+                    subject = 'Gamepass Entregue - Probux'
+                    body = f'Sua gamepass foi entregue! Pedido #{order.id}'
+                else:
+                    subject = 'Falha na Entrega - Probux'
+                    body = f'Houve erro na entrega do pedido #{order.id}. Tente novamente mais tarde.'
+                msg = Message(subject, recipients=[user.email], body=body)
+                mail_ext.send(msg)
+        except Exception as e:
+            _log(f"[EMAIL] Erro: {e}")
 
     return (all_success, "; ".join(results))
