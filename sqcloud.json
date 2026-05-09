@@ -8,10 +8,11 @@
     "subdirectory": ""
   },
   "network": {
-    "http_port": 8080
+    "http_port": 80
   },
   "env": {
     "FLASK_ENV": "production",
     "PORT": "8080"
+    "PORT": "80"
   }
 }
