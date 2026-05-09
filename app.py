@@ -7,9 +7,10 @@ from extensions import db, login_manager
 
 def create_app():
     """Application factory - necessário para Gunicorn + systemd."""
+    import os
     load_dotenv()
 
-    app = Flask(__name__)
+    app = Flask(__name__, template_folder='templates')
 
     # Segredo da aplicação
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'awmjd-jawpdjpoJAOI@JOIALJDASLDJl2kdjmnaksmndal')
