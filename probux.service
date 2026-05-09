@@ -16,6 +16,7 @@ RuntimeDirectoryMode=0755
 # Permissões para logs
 ReadWritePaths=/var/log/probux /var/www/probux/logs
 
+# Comando para VPS tradicional (use apenas se NÃO for Square Cloud)
 ExecStart=/var/www/probux/venv/bin/gunicorn --config gunicorn_config.py "app:create_app()"
 
 # Reinicia automaticamente se cair

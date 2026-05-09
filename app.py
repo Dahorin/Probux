@@ -76,8 +76,10 @@ app = create_app()
 
 if __name__ == '__main__':
     import os
+
+    # Square Cloud / Railway / Render definem a porta via variável PORT
+    port = int(os.environ.get('PORT', 8080))
     is_production = os.getenv('FLASK_ENV', 'production') == 'production'
-    # Em produção, use sempre Gunicorn:
-    # gunicorn --config gunicorn_config.py "app:create_app()"
+
     # Nunca use debug=True em produção!
-    app.run(debug=not is_production, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='0.0.0.0', port=port)

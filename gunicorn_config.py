@@ -1,11 +1,13 @@
 # Gunicorn Configuration for Probux
 # Usage: gunicorn --config gunicorn_config.py "app:create_app()"
+# Na Square Cloud, a porta vem da variável PORT
 
 import multiprocessing
 import os
 
-# Server socket
-bind = os.environ.get('GUNICORN_BIND', "127.0.0.1:5000")
+# Server socket — usa PORT da Square Cloud ou 5000 como fallback
+port = int(os.environ.get('PORT', 5000))
+bind = f"0.0.0.0:{port}"
 backlog = 2048
 
 # Application factory - importa do app.py

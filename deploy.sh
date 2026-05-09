@@ -1,46 +1,63 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================
-# DEPLOY SCRIPT - Atualização do Probux na VPS
-# Execute na VPS: bash deploy.sh
+# DEPLOY SCRIPT - Square Cloud / VPS
+# Execute: bash deploy.sh
 # ============================================================
 
 set -e
 
-APP_DIR="/var/www/probux"
-BRANCH="main"
+APP_DIR="."
 
 echo "=========================================="
 echo "  DEPLOY PROBUX"
 echo "=========================================="
 
-cd "$APP_DIR"
+# Detecta se é Square Cloud ou VPS
+if [ -n "$SQUARECLOUD_ENV" ]; then
+    echo "[INFO] Ambiente: Square Cloud"
+    IS_SQUARE=true
+else
+    echo "[INFO] Ambiente: VPS"
+    IS_SQUARE=false
+fi
 
-echo "[1/5] Puxando atualizações do Git..."
-git fetch origin
-git checkout "$BRANCH"
-git pull origin "$BRANCH"
+echo "[1/4] Atualizando dependências Python..."
+python3 -m pip install --upgrade pip --quiet 2>/dev/null || pip install --upgrade pip --quiet 2>/dev/null || pip3 install --upgrade pip --quiet 2>/dev/null
+pip install -r requirements.txt 2>&1 | tail -5
 
-echo "[2/5] Ativando ambiente virtual..."
-source venv/bin/activate
+echo "[2/4] Garantindo diretórios..."
+mkdir -p logs
 
-echo "[3/5] Instalando/atualizando dependências..."
-pip install --upgrade pip
-pip install -r requirements.txt
+echo "[3/4] Verificando banco de dados..."
+python3 -c "
+from app import create_app
+app = create_app()
+with app.app_context():
+    from extensions import db
+    from models import Product, User
+    db.create_all()
+    # Atualiza price_per_robux
+    products = Product.query.all()
+    for p in products:
+        if p.price_per_robux != 0.034:
+            p.price_per_robux = 0.034
+    db.session.commit()
+    print('[OK] Banco de dados verificado!')
+"
 
-echo "[4/5] Rodando migrações do banco de dados..."
-python -c "from app import app, db; app.app_context().push(); db.create_all()"
+# Para Square Cloud, NÃO reiniciar serviço (o próprio platform faz isso)
+# Para VPS, reiniciar com systemd
+if [ "$IS_SQUARE" = false ]; then
+    echo "[4/4] Reiniciando serviço..."
+    sudo systemctl restart probux 2>/dev/null || echo "[AVISO] Não foi possível reiniciar via systemd"
+else
+    echo "[4/4] Deploy concluído! O Square Cloud vai reiniciar automaticamente."
+fi
 
-echo "[5/5] Reiniciando serviço..."
-deactivate
-sudo systemctl restart probux
-
-# Limpa arquivos temporários do Puppeteer
-rm -f "$APP_DIR"/debug-*.png
-rm -f "$APP_DIR"/logs/*.png 2>/dev/null || true
+# Limpa screenshots antigos
+rm -f debug-*.png logs/debug-*.png 2>/dev/null || true
 
 echo ""
 echo "=========================================="
 echo "  DEPLOY CONCLUÍDO!"
 echo "=========================================="
-echo "  Status: sudo systemctl status probux"
-echo "  Logs:   tail -f /var/log/probux/gunicorn.log"

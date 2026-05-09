@@ -1,0 +1,17 @@
+{
+  "build": {
+    "cmd": "pip install -r requirements.txt",
+    "subdirectory": ""
+  },
+  "run": {
+    "cmd": "python app.py",
+    "subdirectory": ""
+  },
+  "network": {
+    "http_port": 8080
+  },
+  "env": {
+    "FLASK_ENV": "production",
+    "PORT": "8080"
+  }
+}
