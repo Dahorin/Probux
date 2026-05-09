@@ -9,12 +9,10 @@ from sqlalchemy.orm import joinedload
 import re
 import secrets
 import requests
-import zlib
 from datetime import datetime, timedelta
 import os
 import urllib.parse
 import mercadopago_utils
-import json
 
 # Log simples para debug
 import logging
@@ -576,14 +574,10 @@ def checkout():
         qr_url = None  # O Mercado Pago fornece base64, não URL de imagem
         pix_code = mp_payment['qr_code']
     else:
-        # Fallback: gera Pix manual (caso falhe o Mercado Pago)
-        pix_key = current_app.config.get('PIX_KEY') or os.getenv('PIX_KEY', '')
-        if pix_key:
-            pix_code = generate_pix_code(pix_key, total)
-            qr_url = f"https://quickchart.io/qr?size=250&text={urllib.parse.quote(pix_code)}"
-        else:
-            pix_code = ""
-            qr_url = ""
+        # FALHA: Não é possível criar PIX sem Mercado Pago
+        db.session.rollback()
+        flash("Erro ao criar pagamento via Mercado Pago. Tente novamente ou entre em contato com o suporte.", "error")
+        return redirect(url_for('main.cart'))
         db.session.commit()
 
     # Calcula o tempo de expiração (15 minutos após criação)
@@ -609,11 +603,8 @@ def confirm_payment():
         else:
             total += item.product.price * item.quantity
 
-    pix_key = current_app.config.get('PIX_KEY') or os.getenv('PIX_KEY', '')
-    # Gera PIX Code (BR Code válido)
-    pix_code = generate_pix_code(pix_key, total)
-
-    order = Order(user_id=current_user.id, total=total, status='pending', pix_code=pix_code)
+    # Cria o pedido primeiro (PIX será gerado pelo Mercado Pago via checkout)
+    order = Order(user_id=current_user.id, total=total, status='pending')
     db.session.add(order)
     db.session.flush()
 
