@@ -4,14 +4,19 @@ import re
 import requests
 import time
 import json
+import logging
 from datetime import datetime
 
 # Configurações do Mercado Pago
 MP_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', '')
 ROBLOX_COOKIE = os.getenv('ROBLOX_COOKIE', '')
 
-# Arquivo de log local (para debug)
+# Arquivo de log local
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'delivery.log')
+
+# Logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 
 def _ensure_log_dir():
@@ -25,6 +30,7 @@ def _log(message):
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     log_line = f"[{timestamp}] {message}"
     print(log_line, flush=True)
+    logger.info(message)
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(log_line + '\n')
@@ -35,9 +41,15 @@ def _log(message):
 def get_mp_sdk():
     """Retorna o SDK do Mercado Pago inicializado."""
     if not MP_ACCESS_TOKEN:
-        _log("[MP] Token não configurado")
+        _log("[MP] Token não configurado!")
         return None
-    return mercadopago.SDK(MP_ACCESS_TOKEN)
+    try:
+        sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+        _log(f"[MP] SDK inicializado com sucesso")
+        return sdk
+    except Exception as e:
+        _log(f"[MP] Erro ao inicializar SDK: {e}")
+        return None
 
 
 def create_pix_payment(amount, description, order_id, payer_email=None):
@@ -57,23 +69,70 @@ def create_pix_payment(amount, description, order_id, payer_email=None):
             "email": payer_email or "test@test.com"
         },
         "external_reference": str(order_id),
-        "notification_url": os.getenv('MERCADO_PAGO_WEBHOOK_URL', '')
     }
+
+    # Adiciona webhook URL apenas se configurada
+    webhook = os.getenv('MERCADO_PAGO_WEBHOOK_URL', '')
+    if webhook:
+        payment_data["notification_url"] = webhook
+        _log(f"[MP] Webhook configurado: {webhook[:50]}...")
+
+    _log(f"[MP] Criando pagamento: R$ {amount:.2f} | Order #{order_id}")
+    _log(f"[MP] Dados enviados: {json.dumps(payment_data, indent=2)}")
 
     try:
         payment_response = sdk.payment().create(payment_data)
-        payment = payment_response["response"]
-        _log(f"[MP] Pagamento criado: ID={payment['id']}, status={payment['status']}")
+        _log(f"[MP] Resposta bruta: {json.dumps(payment_response, indent=2, default=str)[:2000]}")
+
+        # Verifica se a resposta é um dict
+        if not isinstance(payment_response, dict):
+            _log(f"[MP] ERRO: Resposta não é um dicionário: {type(payment_response)}")
+            return None
+
+        # Tenta extrair dados do pagamento
+        # Versões mais novas do SDK retornam diretamente os dados
+        if "response" in payment_response:
+            payment = payment_response["response"]
+        elif "id" in payment_response:
+            payment = payment_response
+        else:
+            _log(f"[MP] ERRO: Resposta inesperada - chaves disponíveis: {list(payment_response.keys())}")
+            return None
+
+        # Verifica se o pagamento foi criado
+        payment_id = payment.get("id")
+        if not payment_id:
+            _log(f"[MP] ERRO: Campo 'id' não encontrado na resposta")
+            _log(f"[MP] Conteúdo da 'response': {json.dumps(payment, indent=2, default=str)[:1000]}")
+            return None
+
+        # Extrai dados do QR Code
+        qr_data = payment.get("point_of_interaction", {}).get("transaction_data", {})
+        qr_code = qr_data.get("qr_code", "")
+        qr_code_base64 = qr_data.get("qr_code_base64", "")
+        ticket_url = qr_data.get("ticket_url", "")
+
+        status = payment.get("status", "pending")
+
+        _log(f"[MP] ✅ Pagamento criado! ID: {payment_id}, Status: {status}")
 
         return {
-            "id": payment["id"],
-            "status": payment["status"],
-            "qr_code": payment["point_of_interaction"]["transaction_data"]["qr_code"],
-            "qr_code_base64": payment["point_of_interaction"]["transaction_data"]["qr_code_base64"],
-            "ticket_url": payment["point_of_interaction"]["transaction_data"].get("ticket_url", "")
+            "id": str(payment_id),
+            "status": status,
+            "qr_code": qr_code,
+            "qr_code_base64": qr_code_base64,
+            "ticket_url": ticket_url
         }
+
+    except mercadopago.exceptions.MPError as e:
+        _log(f"[MP] SDK Error: {type(e).__name__}: {e}")
+        return None
+    except KeyError as e:
+        _log(f"[MP] KeyError ao processar resposta: {e}")
+        _log(f"[MP] Verifique se o token de acesso está correto e ativo")
+        return None
     except Exception as e:
-        _log(f"[MP] Erro ao criar pagamento Pix: {e}")
+        _log(f"[MP] Erro inesperado: {type(e).__name__}: {e}")
         return None
 
 
@@ -88,11 +147,24 @@ def get_payment_status(payment_id):
 
     try:
         payment_info = sdk.payment().get(payment_id)
-        status = payment_info["response"]["status"]
+        _log(f"[MP] Consulta pagamento {payment_id}: {json.dumps(payment_info, indent=2, default=str)[:500]}")
+
+        if isinstance(payment_info, dict) and "response" in payment_info:
+            status = payment_info["response"].get("status")
+        elif isinstance(payment_info, dict) and "status" in payment_info:
+            status = payment_info["status"]
+        else:
+            _log(f"[MP] Resposta inesperada para get_payment: {type(payment_info)}")
+            status = None
+
         _log(f"[MP] Status do pagamento {payment_id}: {status}")
         return status
+
+    except mercadopago.exceptions.MPError as e:
+        _log(f"[MP] SDK Error ao consultar: {type(e).__name__}: {e}")
+        return None
     except Exception as e:
-        _log(f"[MP] Erro ao consultar pagamento {payment_id}: {e}")
+        _log(f"[MP] Erro ao consultar pagamento {payment_id}: {type(e).__name__}: {e}")
         return None
 
 
@@ -152,7 +224,6 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
         return (False, "Link da Gamepass inválido")
 
     gamepass_id = match.group(1)
-
     last_error = "Erro desconhecido"
 
     for attempt in range(1, max_retries + 1):
@@ -161,7 +232,7 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
 
             session = _create_roblox_session(roblox_cookie)
 
-            # Usa a API de catálogo para verificar preço primeiro
+            # Verifica preço via catálogo
             if expected_price:
                 try:
                     catalog_resp = session.post(
@@ -173,9 +244,7 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
                         items = catalog_resp.json().get('data', [])
                         if items:
                             actual_price = items[0].get('price') or items[0].get('priceInRobux')
-                            _log(f"[GAMEPASS] Preço real da gamepass: {actual_price} Robux")
-                            if actual_price and actual_price != expected_price:
-                                _log(f"[GAMEPASS] AVISO: Preço esperado ({expected_price}) ≠ real ({actual_price})")
+                            _log(f"[GAMEPASS] Preço real: {actual_price} Robux")
                 except Exception as e:
                     _log(f"[GAMEPASS] Aviso: não foi verificar preço: {e}")
 
@@ -190,40 +259,20 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
                 try:
                     data = resp.json()
                     if data.get('success'):
-                        _log(f"[GAMEPASS] ✅ COMPRA BEM SUCEDIDA! Gamepass {gamepass_id}")
+                        _log(f"[GAMEPASS] ✅ COMPRA BEM SUCEDIDA!")
                         return (True, f"Gamepass {gamepass_id} comprada com sucesso via API!")
                     else:
                         error_msg = data.get('error', data.get('errorMessage', 'Erro desconhecido'))
                         last_error = f"Falha: {error_msg}"
-                        _log(f"[GAMEPASS] ❌ API retornou erro: {error_msg}")
                 except Exception:
                     if 'successfully' in resp.text.lower() or 'purchased' in resp.text.lower():
-                        return (True, f"Gamepass {gamepass_id} comprada!")
+                        return (True, f"Gamepass comprada!")
                     last_error = f"Resposta inesperada: {resp.text[:200]}"
 
             elif resp.status_code == 403:
-                # Tenta com o endpoint alternativo
-                _log(f"[GAMEPASS] 403 na API principal, tentando endpoint alternativo...")
-                alt_url = f'https://economy.roblox.com/v1/purchases/game-pass/{gamepass_id}'
-                try:
-                    alt_resp = session.post(
-                        alt_url,
-                        json={'expectedPrice': int(expected_price) if expected_price else 1},
-                        timeout=30
-                    )
-                    if alt_resp.status_code == 200:
-                        data = alt_resp.json()
-                        if data.get('success'):
-                            return (True, f"Gamepass comprada via endpoint alternativo!")
-                        else:
-                            last_error = f"Alt API erro: {data.get('error', 'Desconhecido')}"
-                    else:
-                        last_error = f"Alt API HTTP {alt_resp.status_code}: {alt_resp.text[:200]}"
-                except Exception as e:
-                    last_error = f"Alt API falhou: {e}"
-
-                if resp.status_code == 403 and attempt < max_retries:
-                    _log(f"[GAMEPASS] 403 - Aguardando {attempt * 5}s antes de tentar novamente...")
+                _log(f"[GAMEPASS] 403 - Possível bloqueio de IP ou cookie inválido")
+                last_error = "Acesso negado (403). IP pode estar bloqueado ou cookie expirado."
+                if attempt < max_retries:
                     time.sleep(attempt * 5)
                     continue
                 break
@@ -234,11 +283,11 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
                 time.sleep(wait_time)
                 if attempt < max_retries:
                     continue
-                last_error = "Rate limit excedido após várias tentativas"
+                last_error = "Rate limit excedido"
                 break
 
-            elif resp.status_code == 400:
-                last_error = f"Requisição inválida (400): {resp.text[:300]}"
+            elif resp.status_code in [400, 404, 422]:
+                last_error = f"Erro HTTP {resp.status_code}: {resp.text[:300]}"
                 break
 
             else:
@@ -250,7 +299,6 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
 
         except requests.exceptions.Timeout:
             last_error = "Timeout na API do Roblox"
-            _log(f"[GAMEPASS] Timeout - tentativa {attempt}")
             if attempt < max_retries:
                 time.sleep(attempt * 3)
                 continue
@@ -258,7 +306,6 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
 
         except requests.exceptions.ConnectionError as e:
             last_error = f"Erro de conexão: {e}"
-            _log(f"[GAMEPASS] ConnectionError - tentativa {attempt}")
             if attempt < max_retries:
                 time.sleep(attempt * 5)
                 continue
@@ -266,7 +313,6 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
 
         except Exception as e:
             last_error = f"Erro: {str(e)}"
-            _log(f"[GAMEPASS] Erro inesperado: {e}")
             break
 
     _log(f"[GAMEPASS] ❌ Falha após {max_retries} tentativas: {last_error}")
@@ -275,13 +321,13 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
 
 def _send_notification_email(user_email, order_id, success, message):
     """Envia email de notificação sobre a entrega."""
-    from flask import current_app
-    from flask_mail import Message
-    from extensions import mail as mail_ext
-
     try:
+        from flask import current_app
+        from flask_mail import Message
+        from extensions import mail as mail_ext
         from models import User
         from extensions import db
+
         user = User.query.filter_by(email=user_email).first()
         if not user:
             return
@@ -312,7 +358,6 @@ Houve um problema na entrega da sua gamepass do pedido #{order_id}.
 Erro: {message}
 
 Nossa equipe está ciente do problema e tentará novamente.
-Se o problema persistir, entre em contato pelo nosso suporte.
 
 Atenciosamente,
 Equipe Probux
@@ -334,14 +379,13 @@ def deliver_gamepasses(order, notify_user=True):
     """
     from models import OrderItem, User
     from extensions import db
+    from flask import current_app
 
     gamepass_items = [item for item in order.items if item.product.is_gamepass]
 
     if not gamepass_items:
         return (False, "Nenhum item de gamepass no pedido")
 
-    # Pega o cookie do ambiente ou config do Flask
-    from flask import current_app
     roblox_cookie = current_app.config.get('ROBLOX_COOKIE', '') or os.getenv('ROBLOX_COOKIE', '')
 
     if not roblox_cookie:
@@ -358,12 +402,10 @@ def deliver_gamepasses(order, notify_user=True):
 
         if not gamepass_link:
             results.append(f"Item {item.id}: Link da gamepass não informado")
-            _log(f"[ENTREGA] ⚠️  Item {item.id}: sem link")
             continue
 
         if not robux_amount:
             results.append(f"Item {item.id}: Preço em Robux não informado")
-            _log(f"[ENTREGA] ⚠️  Item {item.id}: sem quantidade")
             continue
 
         success, msg = buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=robux_amount)
@@ -371,11 +413,10 @@ def deliver_gamepasses(order, notify_user=True):
 
         if success:
             success_count += 1
-            _log(f"[ENTREGA] ✅ Item {item.id}: {msg}")
+            _log(f"[ENTREGA] ✅ Item {item.id}: OK")
         else:
             _log(f"[ENTREGA] ❌ Item {item.id}: {msg}")
 
-    # Atualiza status no banco
     all_success = (success_count == len(gamepass_items)) and (len(gamepass_items) > 0)
 
     if all_success:
@@ -384,16 +425,13 @@ def deliver_gamepasses(order, notify_user=True):
         order.status = 'delivered'
         db.session.commit()
         _log(f"[ENTREGA] ✅ Pedido {order.id}: TODAS entregues!")
-
         if notify_user:
             _send_notification_email(order.user.email, order.id, True, "")
-
     else:
         order.status = 'paid'
         db.session.commit()
         failed_count = len(gamepass_items) - success_count
-        _log(f"[ENTREGA] ⚠️  Pedido {order.id}: {success_count}/{len(gamepass_items)} sucesso, {failed_count} falha(s)")
-
+        _log(f"[ENTREGA] ⚠️ Pedido {order.id}: {success_count}/{len(gamepass_items)} sucesso, {failed_count} falha(s)")
         if notify_user and failed_count > 0:
             failure_msg = "; ".join([r for r in results if "sucesso" not in r.lower()])
             _send_notification_email(order.user.email, order.id, False, failure_msg[:500])
