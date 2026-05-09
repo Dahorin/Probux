@@ -1,18 +1,20 @@
 import mercadopago
 import os
 import re
-import subprocess
+import requests
 from datetime import datetime
 
 # Configurações do Mercado Pago
 MP_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', '')
 ROBLOX_COOKIE = os.getenv('ROBLOX_COOKIE', '')
 
+
 def get_mp_sdk():
     """Retorna o SDK do Mercado Pago inicializado."""
     if not MP_ACCESS_TOKEN:
         return None
     return mercadopago.SDK(MP_ACCESS_TOKEN)
+
 
 def create_pix_payment(amount, description, order_id, payer_email=None):
     """
@@ -49,6 +51,7 @@ def create_pix_payment(amount, description, order_id, payer_email=None):
         print(f"[MP] Erro ao criar pagamento Pix: {e}")
         return None
 
+
 def get_payment_status(payment_id):
     """
     Consulta o status de um pagamento no Mercado Pago.
@@ -65,9 +68,59 @@ def get_payment_status(payment_id):
         print(f"[MP] Erro ao consultar pagamento: {e}")
         return None
 
+
+def _get_xcsrf_token(roblox_cookie):
+    """
+    Obtém o token X-CSRF necessário para fazer requests autenticados ao Roblox.
+    """
+    session = requests.Session()
+    session.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
+    session.headers.update({
+        'User-Agent': 'Roblox/WinInet',
+        'Accept': 'application/json',
+    })
+
+    try:
+        # O endpoint de logout retorna o token X-CSRF no header
+        resp = session.post(
+            'https://auth.roblox.com/v2/logout',
+            json={},
+            timeout=10
+        )
+        token = resp.headers.get('X-CSRF-TOKEN')
+        if token:
+            return token
+    except Exception as e:
+        print(f"[ROBLOX] Erro ao obter X-CSRF token: {e}")
+
+    return None
+
+
+def _create_roblox_session(roblox_cookie):
+    """
+    Cria uma sessão requests autenticada com o Roblox.
+    """
+    session = requests.Session()
+    session.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
+
+    # Obter X-CSRF token
+    csrf_token = _get_xcsrf_token(roblox_cookie)
+    if csrf_token:
+        session.headers['X-CSRF-TOKEN'] = csrf_token
+
+    session.headers.update({
+        'User-Agent': 'Roblox/WinInet',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    })
+
+    return session
+
+
 def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None):
     """
-    Compra uma Gamepass usando o Node.js + Puppeteer (via subprocess).
+    Compra uma Gamepass usando a API do Roblox diretamente (Python puro).
+    Sem necessidade de Node.js ou Puppeteer.
     Retorna uma tupla (sucesso, mensagem).
     """
     if not roblox_cookie:
@@ -81,75 +134,74 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None):
     gamepass_id = match.group(1)
 
     try:
-        print(f"[GAMEPASS] Tentando comprar gamepass {gamepass_id} (preço: {expected_price})")
-        print(f"[GAMEPASS] Chamando Node.js via subprocess...")
+        print(f"[GAMEPASS] Tentando comprar gamepass {gamepass_id} (preço esperado: {expected_price})")
 
-        # Define o cookie no ambiente para o Node.js
-        env = os.environ.copy()
-        env['ROBLOX_COOKIE'] = roblox_cookie
+        session = _create_roblox_session(roblox_cookie)
 
-        # Caminho para o script Node.js
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(script_dir, 'comprar-gamepass.js')
+        # Tenta a API de compra do Roblox
+        purchase_url = f'https://api.roblox.com/v1/purchases/game-pass/{gamepass_id}'
 
-        if not os.path.exists(script_path):
-            return (False, f"Script Node.js não encontrado: {script_path}")
-
-        # Verifica se o Node.js está disponível
-        node_check = subprocess.run(['which', 'node'], capture_output=True, text=True)
-        if node_check.returncode != 0:
-            return (False, "Node.js não encontrado no PATH da VPS")
-
-        print(f"[GAMEPASS] Executando: node {script_path} {gamepass_id} {expected_price or '0'}")
-
-        result = subprocess.run(
-            ['node', script_path, gamepass_id, str(expected_price or '0')],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120  # 2 minutos de timeout
-        )
-
-        print(f"[GAMEPASS] Node.js STDOUT: {result.stdout}")
-        if result.stderr:
-            print(f"[GAMEPASS] Node.js STDERR: {result.stderr}")
-
-        if result.returncode == 0:
-            # Tenta fazer parse do JSON retornado pelo Node.js
+        # Primeiro, verifica o preço se possível
+        if expected_price:
             try:
-                import json
-                # O Node.js imprime JSON na última linha
-                lines = result.stdout.strip().split('\n')
-                for line in reversed(lines):
-                    line = line.strip()
-                    if line.startswith('{') and line.endswith('}'):
-                        try:
-                            node_result = json.loads(line)
-                            if node_result.get('success'):
-                                return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
-                            else:
-                                return (False, f"Falha na compra: {node_result.get('message', 'Erro desconhecido')}")
-                        except:
-                            continue
-                # Se não conseguiu fazer parse do JSON
-                if 'SUCESSO' in result.stdout or 'sucesso' in result.stdout:
-                    return (True, f"Gamepass {gamepass_id} comprada!")
-                else:
-                    return (False, f"Resultado ambíguo: {result.stdout[:200]}")
+                catalog_url = 'https://catalog.roblox.com/v1/catalog/items/details'
+                catalog_resp = session.post(
+                    catalog_url,
+                    json={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]},
+                    timeout=15
+                )
+                if catalog_resp.status_code == 200:
+                    data = catalog_resp.json()
+                    items = data.get('data', [])
+                    if items:
+                        actual_price = items[0].get('price') or items[0].get('priceInRobux')
+                        if actual_price and actual_price != expected_price:
+                            print(f"[GAMEPASS] Preço não coincide: esperado {expected_price}, real {actual_price}")
+                            # Continua tentando a compra mesmo assim
             except Exception as e:
-                return (False, f"Erro ao processar resultado: {str(e)}")
-        else:
-            return (False, f"Erro no Node.js (código {result.returncode}): {result.stderr[:200]}")
+                print(f"[GAMEPASS] Aviso: não foi possível verificar preço: {e}")
 
-    except subprocess.TimeoutExpired:
-        return (False, "Timeout: Node.js demorou muito para executar (limite: 2min)")
+        # Tenta a compra
+        print(f"[GAMEPASS] Chamando API: POST {purchase_url}")
+        payload = {'expectedPrice': int(expected_price) if expected_price else 0}
+
+        resp = session.post(purchase_url, json=payload, timeout=30)
+        print(f"[GAMEPASS] Status: {resp.status_code}, Body: {resp.text[:500]}")
+
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                if data.get('success'):
+                    return (True, f"Gamepass {gamepass_id} comprada com sucesso via API!")
+                else:
+                    error_msg = data.get('error', data.get('errorMessage', 'Erro desconhecido'))
+                    return (False, f"Falha na compra: {error_msg}")
+            except Exception:
+                if 'successfully' in resp.text.lower() or 'purchased' in resp.text.lower():
+                    return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
+                return (False, f"Resposta inesperada: {resp.text[:200]}")
+        elif resp.status_code == 403:
+            return (False, "Acesso negado. Cookie pode estar expirado ou inválido.")
+        elif resp.status_code == 400:
+            return (False, f"Requisição inválida (400): {resp.text[:300]}")
+        elif resp.status_code == 429:
+            return (False, "Rate limit atingido. Tente novamente mais tarde.")
+        else:
+            return (False, f"Erro HTTP {resp.status_code}: {resp.text[:200]}")
+
+    except requests.exceptions.Timeout:
+        return (False, "Timeout: a API do Roblox demorou muito para responder")
+    except requests.exceptions.ConnectionError as e:
+        return (False, f"Erro de conexão com a API do Roblox: {e}")
     except Exception as e:
-        return (False, f"Erro ao chamar Node.js: {str(e)}")
+        print(f"[GAMEPASS] Erro geral: {e}")
+        return (False, f"Erro ao comprar gamepass: {str(e)}")
+
 
 def deliver_gamepasses(order, notify_user=True):
     """
     Entrega as Gamepasses de um pedido após pagamento confirmado.
-    Usa a conta configurada no ROBLOX_COOKIE para comprar.
+    Usa a API do Roblox diretamente (Python puro - sem Node.js).
     Retorna uma tupla (sucesso, mensagem).
     """
     from models import OrderItem, User, Order
@@ -162,9 +214,14 @@ def deliver_gamepasses(order, notify_user=True):
     if not gamepass_items:
         return (False, "Nenhum item de gamepass no pedido")
 
-    roblox_cookie = ROBLOX_COOKIE
+    roblox_cookie = os.getenv('ROBLOX_COOKIE', '')
     if not roblox_cookie:
-        return (False, "Cookie do Roblox não configurado no .env")
+        return (False, "Cookie do Roblox não configurado no ambiente")
+
+    # Se tiver cookie nas config do app, usa ele
+    from flask import current_app
+    app_cookie = current_app.config.get('ROBLOX_COOKIE', '')
+    roblox_cookie = app_cookie or roblox_cookie
 
     print(f"[ENTREGA] Iniciando entrega do pedido {order.id}...")
     results = []
@@ -175,7 +232,11 @@ def deliver_gamepasses(order, notify_user=True):
         robux_amount = item.robux_amount
 
         if not robux_amount:
-            results.append(f"Gamepass: Preço em Robux não informado")
+            results.append(f"Gamepass: Preço em Robux não informado para item {item.id}")
+            continue
+
+        if not gamepass_link:
+            results.append(f"Gamepass: Link não informado para item {item.id}")
             continue
 
         print(f"[ENTREGA] Processando: {gamepass_link} ({robux_amount} Robux)")
