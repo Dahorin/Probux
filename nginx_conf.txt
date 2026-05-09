@@ -1,0 +1,60 @@
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name SEU_DOMINIO_AQUI.COM;
+
+    # SSL - Certificados Let's Encrypt
+    ssl_certificate /etc/letsencrypt/live/SEU_DOMINIO_AQUI.COM/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/SEU_DOMINIO_AQUI.COM/privkey.pem;
+
+    # Segurança SSL
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout = 1d;
+
+    # Headers de segurança
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Proxy para o Gunicorn
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Webhook do Mercado Pago
+    location /webhook/mercadopago {
+        proxy_pass http://127.0.0.1:5000/webhook/mercadopago;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Sem cache para webhooks
+        proxy_no_cache 1;
+        proxy_cache_bypass 1;
+    }
+
+    # Arquivos estáticos (CSS, JS, imagens)
+    location /static {
+        alias /var/www/probux/static;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+}

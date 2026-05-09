@@ -1,0 +1,22 @@
+[Unit]
+Description=Probux Flask Application
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/probux
+Environment="PATH=/var/www/probux/venv/bin"
+Environment="FLASK_ENV=production"
+ExecStart=/var/www/probux/venv/bin/gunicorn --config gunicorn_config.py app:app
+
+# Reinicia automaticamente se cair
+Restart=always
+RestartSec=3
+
+# Logs
+StandardOutput=append:/var/log/probux/gunicorn.log
+StandardError=append:/var/log/probux/gunicorn_error.log
+
+[Install]
+WantedBy=multi-user.target

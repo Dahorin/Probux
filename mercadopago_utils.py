@@ -95,6 +95,11 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None):
         if not os.path.exists(script_path):
             return (False, f"Script Node.js não encontrado: {script_path}")
 
+        # Verifica se o Node.js está disponível
+        node_check = subprocess.run(['which', 'node'], capture_output=True, text=True)
+        if node_check.returncode != 0:
+            return (False, "Node.js não encontrado no PATH da VPS")
+
         print(f"[GAMEPASS] Executando: node {script_path} {gamepass_id} {expected_price or '0'}")
 
         result = subprocess.run(

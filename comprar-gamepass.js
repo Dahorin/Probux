@@ -1,4 +1,6 @@
 const puppeteer = require('puppeteer');
+const path = require('path');
+const fs = require('fs');
 
 async function buyGamepass(gamepassId, robuxAmount, cookie) {
     console.log(`[NODE] Iniciando compra da gamepass ${gamepassId}...`);
@@ -51,7 +53,9 @@ async function buyGamepass(gamepassId, robuxAmount, cookie) {
                 console.log('[NODE] Botão purchase-button clicado (1ª vez)!');
             } catch (e2) {
                 console.log('[NODE] Nenhum botão de compra encontrado');
-                await page.screenshot({ path: 'debug-gamepass.png' });
+                const logDir = path.join(__dirname, 'logs');
+                if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+                await page.screenshot({ path: 'logs/debug-gamepass.png' });
                 return { success: false, message: 'Botão de compra nao encontrado' };
             }
         }
@@ -61,8 +65,10 @@ async function buyGamepass(gamepassId, robuxAmount, cookie) {
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         // Tira screenshot para debug
-        await page.screenshot({ path: 'debug-modal.png' });
-        console.log('[NODE] Screenshot da modal: debug-modal.png');
+        const logDir = path.join(__dirname, 'logs');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        await page.screenshot({ path: path.join(logDir, 'debug-modal.png') });
+        console.log('[NODE] Screenshot da modal: logs/debug-modal.png');
 
         // Segundo clique no Buy DENTRO da modal - usando page.click
         console.log('[NODE] Tentando clicar no Buy da modal (2ª vez)...');
@@ -137,7 +143,9 @@ async function buyGamepass(gamepassId, robuxAmount, cookie) {
             console.log('[NODE] Botão Buy clicado na modal (2ª vez)!');
         } else {
             console.log('[NODE] ERRO: Não conseguiu encontrar/clicar no Buy da modal');
-            await page.screenshot({ path: 'debug-gamepass.png' });
+            const logDir = path.join(__dirname, 'logs');
+            if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+            await page.screenshot({ path: path.join(logDir, 'debug-gamepass.png') });
             return { success: false, message: 'Nao conseguiu clicar no botão da modal' };
         }
 
@@ -176,8 +184,10 @@ async function buyGamepass(gamepassId, robuxAmount, cookie) {
         }
 
         // Debug
-        await page.screenshot({ path: 'debug-gamepass.png' });
-        console.log('[NODE] Screenshot salvo: debug-gamepass.png');
+        const logDir = path.join(__dirname, 'logs');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        await page.screenshot({ path: 'logs/debug-gamepass.png' });
+        console.log('[NODE] Screenshot salvo: logs/debug-gamepass.png');
 
         return { success: false, message: 'Nao foi possivel confirmar a compra' };
 

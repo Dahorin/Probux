@@ -62,4 +62,8 @@ with app.app_context():
     db.session.commit()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Em produção, use Gunicorn: gunicorn --config gunicorn_config.py app:app
+    # Nunca use debug=True em produção!
+    import os
+    is_production = os.getenv('FLASK_ENV', 'production') == 'production'
+    app.run(debug=not is_production, host='0.0.0.0', port=5000)
