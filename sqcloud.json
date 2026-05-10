@@ -12,7 +12,6 @@
   },
   "env": {
     "FLASK_ENV": "production",
-    "PORT": "8080"
     "PORT": "80"
   }
 }
