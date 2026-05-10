@@ -325,7 +325,7 @@ def deliver_gamepasses(order, notify_user=True):
                     subject = '⚠️ Falha na Entrega - Probux'
                     body = (
                         f"Olá {user.username},\n\n"
-                        f"Houve um erro na entrega do pedido #{order_id}.\n"
+                        f"Houve um erro na entrega do pedido #{order.id}.\n"
                         f"Nossa equipe foi notificada.\n\n"
                         f"— Equipe Probux"
                     )
