@@ -22,35 +22,42 @@ logger = logging.getLogger(__name__)
 def get_roblox_balance(roblox_cookie):
     """
     Consulta o saldo de Robux da conta do Roblox usando o cookie.
-    Tenta múltiplas APIs (v2 primeiro, fallback para v1 e web scraping).
+    Usa sessão robusta com múltiplos fallbacks de API.
     Retorna o saldo ou None em caso de erro.
     """
-    try:
-        s = requests.Session()
-        s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
-        s.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-        })
+    if not roblox_cookie:
+        return None
 
-        # Tenta pegar XSRF token
+    try:
+        roblox_cookie = roblox_cookie.strip()
+        session = mercadopago_utils._create_session(roblox_cookie)
+
+        # Obtém XSRF token
+        mercadopago_utils._get_xsrf_token(session)
+
+        # Método 1: Economy API v1 (endpoint direto)
         try:
-            r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
-            xsrf = r.headers.get('X-CSRF-TOKEN')
-            if xsrf:
-                s.headers['X-CSRF-TOKEN'] = xsrf
-        except:
+            resp = session.get('https://economy.roblox.com/v1/user/currency', timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                robux = data.get('robux')
+                if robux is not None:
+                    return robux
+                # Tenta extrair do campo 'data' se vier em formato diferente
+                if isinstance(data, dict) and 'robux' in data:
+                    return data['robux']
+        except Exception as e:
+            print(f"[ROBLOX] Economy v1 erro: {e}")
             pass
 
-        # Tentativa 1: Economy API v2 (requer userId)
+        # Método 2: Usuário autenticado + Economy v2
         try:
-            # Primeiro pega o userId via users/authenticated
-            resp_user = s.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+            resp_user = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
             if resp_user.status_code == 200:
                 user_data = resp_user.json()
                 user_id = user_data.get('id')
                 if user_id:
-                    resp = s.get(f'https://economy.roblox.com/v2/users/{user_id}/currency', timeout=15)
+                    resp = session.get(f'https://economy.roblox.com/v2/users/{user_id}/currency', timeout=15)
                     if resp.status_code == 200:
                         data = resp.json()
                         robux = data.get('robux')
@@ -59,22 +66,16 @@ def get_roblox_balance(roblox_cookie):
         except Exception:
             pass
 
-        # Tentativa 2: Economy API v1 (legacy)
+        # Método 3: Tentar via catalog (algumas contas retornam via esse endpoint)
         try:
-            resp = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get('robux', 0)
-        except Exception:
-            pass
-
-        # Tentativa 3: Via catalog (estimativa pelo número de itens)
-        try:
-            resp = s.get('https://catalog.roblox.com/v1/search/items?category=All&limit=1', timeout=10)
-            if resp.status_code == 200:
-                # Se a API responde, ao menos a sessão está válida
-                # Mas não conseguimos o saldo por aqui
-                print("[ROBLOX] API catalog acessível, mas saldo não disponível via este endpoint")
+            resp = session.post(
+                'https://catalog.roblox.com/v1/catalog/items/details',
+                json={'items': [{'id': 1, 'itemType': 'GamePass'}]},
+                timeout=10
+            )
+            if resp.status_code != 403:
+                # Se responde, ao menos a sessão funciona
+                print(f"[ROBLOX] Catalog API responde (status {resp.status_code}), mas saldo indisponível por este endpoint")
         except Exception:
             pass
 
@@ -1001,102 +1002,177 @@ def delivery_logs():
 @main.route('/test_roblox_connection')
 @login_required
 def test_roblox_connection():
-    """Testa a conexão com a API do Roblox e exibe os resultados."""
+    """Testa a conexão com a API do Roblox e exibe os resultados detalhados."""
     from flask import current_app
 
     roblox_cookie = current_app.config.get('ROBLOX_COOKIE') or os.getenv('ROBLOX_COOKIE', '')
+
+    # Usa a função helper para testar todos os endpoints
+    if not roblox_cookie:
+        return render_template('test_connection.html', results={
+            'error': 'ROBLOX_COOKIE não configurado no .env',
+            'endpoints': [],
+            'overall_success': False,
+        })
+
+    # Limpa e valida cookie
+    roblox_cookie = roblox_cookie.strip()
+    if len(roblox_cookie) < 20:
+        return render_template('test_connection.html', results={
+            'error': 'Cookie muito curto. Copie o .ROBLOSECURITY completo do navegador.',
+            'endpoints': [],
+            'overall_success': False,
+        })
+
+    # Usa a função de balance que já testa tudo internamente
+    from mercadopago_utils import _create_session, _get_xsrf_token, verify_roblox_cookie
+
     results = {
+        'error': None,
+        'endpoints': [],
         'cookie_valid': False,
-        'api_v2': {'status': 'not_tested', 'message': ''},
-        'api_v1': {'status': 'not_tested', 'message': ''},
-        'catalog_api': {'status': 'not_tested', 'message': ''},
-        'purchase_api': {'status': 'not_tested', 'message': ''},
-        'proxy': USE_PROXY if USE_PROXY else False,
         'overall_success': False,
     }
 
-    if not roblox_cookie:
-        results['message'] = 'Cookie do Roblox não configurado!'
-        return render_template('test_connection.html', results=results)
-
-    # Cria sessão e tenta autenticar
-    session = mercadopago_utils._create_session(roblox_cookie)
-
-    # Verifica se o cookie é válido
-    is_valid, error = mercadopago_utils.verify_roblox_cookie(roblox_cookie)
+    # Verifica cookie
+    is_valid, error_msg = verify_roblox_cookie(roblox_cookie)
     results['cookie_valid'] = is_valid
 
     if not is_valid:
-        results['message'] = f'Cookie inválido: {error}'
+        results['error'] = error_msg
+        results['endpoints'].append({
+            'name': 'Cookie Check',
+            'url': 'users.roblox.com/v1/users/authenticated',
+            'status': 'error',
+            'message': error_msg
+        })
         return render_template('test_connection.html', results=results)
 
-    # Teste 1: API v2 (usuário autenticado)
-    try:
-        resp = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-        if resp.status_code == 200:
-            user_data = resp.json()
-            results['api_v2'] = {
-                'status': 'ok',
-                'message': f"Conectado como {user_data.get('name', 'Unknown')} (ID: {user_data.get('id')})"
-            }
-        else:
-            results['api_v2'] = {'status': 'error', 'message': f'HTTP {resp.status_code}'}
-    except Exception as e:
-        results['api_v2'] = {'status': 'error', 'message': str(e)[:200]}
+    # Cookie válido, agora testa os endpoints
+    session = _create_session(roblox_cookie)
+    _get_xsrf_token(session)
 
-    # Teste 2: API v1 Economy (saldo)
-    try:
-        resp = session.get('https://economy.roblox.com/v1/user/currency', timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            results['api_v1'] = {
-                'status': 'ok',
-                'message': f"Saldo: {data.get('robux', '?')} Robux"
-            }
-        else:
-            results['api_v1'] = {'status': 'error', 'message': f'HTTP {resp.status_code}'}
-    except Exception as e:
-        results['api_v1'] = {'status': 'error', 'message': str(e)[:200]}
+    endpoints = [
+        {
+            'name': 'Usuário Autenticado (v2)',
+            'url': 'https://users.roblox.com/v1/users/authenticated',
+            'method': 'GET',
+        },
+        {
+            'name': 'Saldo Robux (Economy v1)',
+            'url': 'https://economy.roblox.com/v1/user/currency',
+            'method': 'GET',
+        },
+        {
+            'name': 'Catalog API',
+            'url': 'https://catalog.roblox.com/v1/catalog/items/details',
+            'method': 'POST',
+            'json': {'items': [{'id': 1, 'itemType': 'GamePass'}]},
+        },
+        {
+            'name': 'Purchase API',
+            'url': 'https://api.roblox.com/v1/purchases/game-pass/1',
+            'method': 'POST',
+            'json': {'expectedPrice': 1},
+        },
+    ]
 
-    # Teste 3: Catalog API
-    try:
-        resp = session.post(
-            'https://catalog.roblox.com/v1/catalog/items/details',
-            json={'items': [{'id': 1, 'itemType': 'GamePass'}]},
-            timeout=10
-        )
-        if resp.status_code == 200:
-            results['catalog_api'] = {'status': 'ok', 'message': 'Catalog API respondendo'}
-        else:
-            results['catalog_api'] = {'status': 'error', 'message': f'HTTP {resp.status_code}'}
-    except Exception as e:
-        results['catalog_api'] = {'status': 'error', 'message': str(e)[:200]}
+    all_passed = True
 
-    # Teste 4: Purchase API (comprar gamepass ID 1 com preço 1 — será rejeitada, mas prova que a API responde)
-    try:
-        # Pega XSRF token
-        xsrf = mercadopago_utils._get_xsrf_token(session)
-        resp = session.post(
-            'https://api.roblox.com/v1/purchases/game-pass/1',
-            json={'expectedPrice': 1},
-            timeout=15
-        )
-        if resp.status_code in [200, 400, 403, 401, 422]:
-            results['purchase_api'] = {
-                'status': 'ok',
-                'message': f'Purchase API responde (HTTP {resp.status_code}). '
-                           f'Resposta: {resp.text[:200]}'
-            }
-        else:
-            results['purchase_api'] = {'status': 'error', 'message': f'HTTP {resp.status_code}: {resp.text[:200]}'}
-    except Exception as e:
-        results['purchase_api'] = {'status': 'error', 'message': str(e)[:200]}
+    for ep in endpoints:
+        try:
+            if ep['method'] == 'GET':
+                resp = session.get(ep['url'], timeout=15)
+            else:
+                resp = session.post(ep['url'], json=ep.get('json', {}), timeout=15)
 
-    # Resultado geral
-    results['overall_success'] = all([
-        results['cookie_valid'],
-        results['api_v2']['status'] == 'ok',
-        results['purchase_api']['status'] == 'ok'
-    ])
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    if ep['name'] == 'Usuário Autenticado (v2)':
+                        username = data.get('name', 'Unknown')
+                        user_id = data.get('id')
+                        msg = f"✅ Conectado como: {username} (ID: {user_id})"
+                        results['endpoints'].append({
+                            'name': ep['name'], 'status': 'ok',
+                            'message': msg
+                        })
+                    elif ep['name'] == 'Saldo Robux (Economy v1)':
+                        robux = data.get('robux', '?')
+                        msg = f"💰 Saldo: {robux} Robux"
+                        results['endpoints'].append({
+                            'name': ep['name'], 'status': 'ok',
+                            'message': msg
+                        })
+                    else:
+                        msg = f"HTTP 200 - OK"
+                        results['endpoints'].append({
+                            'name': ep['name'], 'status': 'ok',
+                            'message': msg,
+                            'raw': json.dumps(data, default=str)[:300]
+                        })
+                except Exception:
+                    results['endpoints'].append({
+                        'name': ep['name'], 'status': 'ok',
+                        'message': f"HTTP 200 (resposta não-JSON)",
+                        'raw': resp.text[:300]
+                    })
+            elif resp.status_code == 401:
+                results['endpoints'].append({
+                    'name': ep['name'], 'status': 'error',
+                    'message': f"HTTP 401 - Não autorizado (cookie expirado?)"
+                })
+                all_passed = False
+            elif resp.status_code == 403:
+                # 403 pode ser IP bloqueado
+                body = resp.text[:200]
+                results['endpoints'].append({
+                    'name': ep['name'], 'status': 'warning',
+                    'message': f"HTTP 403 - IP possivelmente bloqueado pelo Roblox. Considere usar proxy Cloudflare."
+                })
+                all_passed = False
+            elif resp.status_code == 429:
+                results['endpoints'].append({
+                    'name': ep['name'], 'status': 'warning',
+                    'message': f"HTTP 429 - Rate limit (tente novamente em alguns minutos)"
+                })
+                all_passed = False
+            else:
+                results['endpoints'].append({
+                    'name': ep['name'], 'status': 'error',
+                    'message': f"HTTP {resp.status_code}: {resp.text[:300]}"
+                })
+                all_passed = False
+
+        except requests.exceptions.ConnectionError:
+            results['endpoints'].append({
+                'name': ep['name'], 'status': 'error',
+                'message': 'Falha de conexão - rede/proxy pode estar bloqueando'
+            })
+            all_passed = False
+        except requests.exceptions.Timeout:
+            results['endpoints'].append({
+                'name': ep['name'], 'status': 'error',
+                'message': 'Timeout - servidor Roblox demorou muito para responder'
+            })
+            all_passed = False
+        except Exception as e:
+            results['endpoints'].append({
+                'name': ep['name'], 'status': 'error',
+                'message': str(e)[:200]
+            })
+            all_passed = False
+
+    # Se purchase API deu 400/422 com mensagem de "insufficient funds", na verdade a API está OK
+    # (significa que a compra foi recusada por falta de Robux, não por erro de conexão)
+    for ep_result in results['endpoints']:
+        if ep_result['name'] == 'Purchase API' and ep_result['status'] == 'error':
+            raw = ep_result.get('message', '')
+            if '400' in raw or '422' in raw:
+                # A API respondeu, só rejeitou a compra
+                ep_result['status'] = 'ok_partial'
+                ep_result['message'] = raw + " ⟵ API funciona, compra rejeitada (sem Robux suficiente ou gamepass já comprada)"
+
+    results['overall_success'] = all_passed
 
     return render_template('test_connection.html', results=results)

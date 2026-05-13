@@ -11,23 +11,51 @@ from datetime import datetime
 # CONFIGURAÇÃO DO MERCADO PAGO
 # ===================================================================
 MP_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', '')
-ROBLOX_COOKIE = os.getenv('ROBLOX_COOKIE', '')
+ROBLOX_COOKIE = os.getenv('ROBLOX_COOKIE', '').strip()
 
 # URL do Cloudflare Worker proxy (deixe vazio para conexão direta)
 # Exemplo: https://roblox-proxy.seu-nome.workers.dev
-ROBLOX_PROXY_URL = os.getenv('ROBLOX_PROXY_URL', '')
+ROBLOX_PROXY_URL = os.getenv('ROBLOX_PROXY_URL', '').strip()
 
 USE_PROXY = bool(ROBLOX_PROXY_URL)
 
+# Detectar se suporta brotli
+try:
+    import brotli
+    HAS_BROTLI = True
+except ImportError:
+    HAS_BROTLI = False
+
 # Headers padrão para simular navegador real (evita bloqueios)
+_accept_encoding = 'gzip, deflate'
+if HAS_BROTLI:
+    _accept_encoding += ', br'
+
 DEFAULT_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
+    'Accept': 'application/json, text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Content-Type': 'application/json',
+    'Accept-Encoding': _accept_encoding,
+    'Content-Type': 'application/json; charset=UTF-8',
     'Origin': 'https://www.roblox.com',
     'Referer': 'https://www.roblox.com/',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-site',
+}
+
+HOMEPAGE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept-Encoding': _accept_encoding,
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
 }
 
 # ===================================================================
@@ -40,13 +68,11 @@ logger.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# Console handler
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-# File handler
 try:
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
     fh = logging.FileHandler(LOG_FILE, encoding='utf-8')
@@ -64,91 +90,123 @@ def _log(msg, level='info'):
         print(f"[{level.upper()}] {msg}", flush=True)
 
 
-def _create_session(roblox_cookie=None):
-    """Cria uma sessão requests com headers realistas e cookie configurado."""
+def _create_session(roblox_cookie=None, use_homepage_headers=False):
+    """Cria uma sessão requests configurada para Roblox."""
     s = requests.Session()
-    s.headers.update(DEFAULT_HEADERS)
+    if use_homepage_headers:
+        s.headers.update(HOMEPAGE_HEADERS)
+    else:
+        s.headers.update(DEFAULT_HEADERS)
+
     if roblox_cookie:
+        # Limpa espaços e quebras de linha do cookie
+        roblox_cookie = roblox_cookie.strip()
         s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com', path='/')
+        _log(f"[ROBLOX] Cookie configurado ({len(roblox_cookie)} chars)", 'debug')
     return s
 
 
 def _get_xsrf_token(session):
     """Obtém o token XSRF necessário para operações POST no Roblox."""
+    # Método 1: via logout (funciona se o cookie NÃO for válido - retorna 401 com XSRF)
     try:
-        # Método 1: via logout endpoint (retorna X-CSRF-TOKEN no header)
         resp = session.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
         xsrf = resp.headers.get('X-CSRF-TOKEN') or resp.headers.get('x-csrf-token')
         if xsrf:
             session.headers['X-CSRF-TOKEN'] = xsrf
+            _log(f"[ROBLOX] XSRF token obtido via /v2/logout", 'debug')
             return xsrf
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[ROBLOX] Erro XSRF logout: {e}", 'debug')
 
+    # Método 2: via authenticate
     try:
-        # Método 2: via authenticate endpoint (se logout falhar por já estar deslogado)
         resp = session.post('https://auth.roblox.com/v2/authenticate', json={}, timeout=10)
         xsrf = resp.headers.get('X-CSRF-TOKEN') or resp.headers.get('x-csrf-token')
         if xsrf:
             session.headers['X-CSRF-TOKEN'] = xsrf
+            _log(f"[ROBLOX] XSRF token obtido via /v2/authenticate", 'debug')
             return xsrf
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[ROBLOX] Erro XSRF authenticate: {e}", 'debug')
 
+    # Método 3: via página de login (fallback HTML)
     try:
-        # Método 3: via página de perfil (parsing do HTML)
-        resp = session.get('https://www.roblox.com/users/#!/profile', timeout=10)
+        resp = session.get('https://www.roblox.com/login', timeout=10)
         if resp.status_code == 200:
             match = re.search(r'name="__RequestVerificationToken"[^>]*?value="([^"]+)"', resp.text)
             if match:
                 token = match.group(1)
                 session.headers['X-CSRF-TOKEN'] = token
+                _log(f"[ROBLOX] XSRF token obtido via HTML login", 'debug')
                 return token
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[ROBLOX] Erro XSRF HTML: {e}", 'debug')
 
     return None
+
+
+def _test_endpoint(session, method, url, json_data=None, timeout=15):
+    """Testa um endpoint específico e retorna resultado legível."""
+    try:
+        if method.upper() == 'POST':
+            resp = session.post(url, json=json_data, timeout=timeout, allow_redirects=False)
+        else:
+            resp = session.get(url, timeout=timeout, allow_redirects=False)
+
+        # Seguir redirecionamentos manualmente para ver para onde vai
+        location = resp.headers.get('Location', '')
+
+        return {
+            'status_code': resp.status_code,
+            'location': location,
+            'body_preview': resp.text[:500],
+            'headers': dict(resp.headers),
+        }
+    except requests.exceptions.ConnectionError as e:
+        return {'error': f'ConnectionError: {str(e)[:200]}'}
+    except requests.exceptions.Timeout:
+        return {'error': 'Timeout'}
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {str(e)[:200]}'}
 
 
 def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retries=3, use_auth=True):
     """
     Faz request para a API do Roblox com retry automático.
-    Tenta api.roblox.com primeiro, depois catalog.roblox.com como fallback para GETs.
+    Tenta api.roblox.com primeiro, depois catalog.roblox.com como fallback.
+    Suporta redirecionamentos.
     """
     if session is None:
         session = _create_session(ROBLOX_COOKIE if use_auth else None)
 
-    # Tenta obter XSRF token para POSTs
     if method.upper() == 'POST' and use_auth:
         _get_xsrf_token(session)
 
     last_error = "Erro desconhecido"
 
-    # Define URLs de fallback
-    if endpoint.startswith('/v1/') or endpoint.startswith('/v2/'):
-        urls = [
-            f"https://api.roblox.com{endpoint}",           # API oficial
-            f"https://catalog.roblox.com{endpoint}",       # Catalog API (fallback)
-        ]
-    else:
-        urls = [
-            f"https://api.roblox.com{endpoint}",
-        ]
-
+    urls = []
     if USE_PROXY and ROBLOX_PROXY_URL:
         urls = [f"{ROBLOX_PROXY_URL}{endpoint}"]
+    elif endpoint.startswith('/v1/') or endpoint.startswith('/v2/'):
+        urls = [
+            f"https://api.roblox.com{endpoint}",
+            f"https://catalog.roblox.com{endpoint}",
+        ]
+    else:
+        urls = [f"https://api.roblox.com{endpoint}"]
 
     for url_idx, base_url in enumerate(urls):
         for attempt in range(1, max_retries + 1):
             try:
                 if method.upper() == 'POST':
-                    resp = session.post(base_url, json=json_data, timeout=30)
+                    resp = session.post(base_url, json=json_data, timeout=30, allow_redirects=True)
                 elif method.upper() == 'GET':
-                    resp = session.get(base_url, timeout=30)
+                    resp = session.get(base_url, timeout=30, allow_redirects=True)
                 else:
-                    resp = session.request(method.upper(), base_url, json=json_data, timeout=30)
+                    resp = session.request(method.upper(), base_url, json=json_data, timeout=30, allow_redirects=True)
 
-                _log(f"[ROBLOX] URL: {base_url} | Status: {resp.status_code} | Tentativa: {attempt}", 'debug')
+                _log(f"[ROBLOX] {method} {base_url} | Status: {resp.status_code} | Tentativa: {attempt}", 'debug')
 
                 if resp.status_code == 200:
                     try:
@@ -156,25 +214,24 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
                     except Exception:
                         return resp.text, None
                 elif resp.status_code == 403:
-                    error_msg = "Acesso negado (403) — cookie inválido, expirado ou IP bloqueado"
-                    _log(f"[ROBLOX] {error_msg} | Body: {resp.text[:200]}", 'error')
-                    # Se 403 em uma URL, tenta a próxima URL de fallback
+                    # 403 pode ser IP bloqueado OU cookie inválido
+                    _log(f"[ROBLOX] 403 em {base_url}: {resp.text[:200]}", 'warning')
                     if url_idx < len(urls) - 1:
                         _log(f"[ROBLOX] Tentando URL alternativa...", 'info')
                         break
-                    return None, error_msg
+                    return None, "Acesso negado (403) — cookie inválido ou IP bloqueado pelo Roblox"
                 elif resp.status_code == 401:
-                    return None, "Não autorizado (401) — cookie expirado ou inválido"
+                    return None, "Não autorizado (401) — cookie expirado"
                 elif resp.status_code == 429:
                     wait = attempt * 5
-                    _log(f"[ROBLOX] Rate limit ({resp.status_code}), aguardando {wait}s...", 'warning')
+                    _log(f"[ROBLOX] Rate limit (429), esperando {wait}s...", 'warning')
                     time.sleep(wait)
                     last_error = "Rate limit"
                     continue
                 elif resp.status_code == 500:
-                    error_msg = f"Erro interno do servidor Roblox (500)"
+                    error_msg = f"Erro interno do servidor (500)"
                     _log(f"[ROBLOX] {error_msg} | Body: {resp.text[:200]}", 'error')
-                    time.sleep(2)
+                    time.sleep(3)
                     last_error = error_msg
                     continue
                 elif resp.status_code == 422:
@@ -184,19 +241,23 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
                         error_msg = errors[0].get('message', resp.text[:200]) if errors else resp.text[:200]
                     except Exception:
                         error_msg = resp.text[:200]
-                    return None, f"Validação falhou (422): {error_msg}"
+                    return None, f"Erro de validação (422): {error_msg}"
                 elif resp.status_code >= 502:
                     wait = attempt * 3
-                    _log(f"[ROBLOX] Gateway error ({resp.status_code}), aguardando {wait}s...", 'warning')
+                    _log(f"[ROBLOX] Gateway error ({resp.status_code}), esperando {wait}s...", 'warning')
                     time.sleep(wait)
                     last_error = f"HTTP {resp.status_code}"
                     continue
+                elif resp.status_code == 302 or resp.status_code == 301:
+                    # Redirecionamento - seguir
+                    _log(f"[ROBLOX] Redirecionamento ({resp.status_code}) para: {resp.headers.get('Location')}", 'debug')
+                    return {'redirected': True, 'location': resp.headers.get('Location')}, 'redirected'
                 else:
                     return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
 
             except requests.exceptions.Timeout:
                 last_error = "Timeout"
-                _log(f"[ROBLOX] ⏰ Timeout (tentativa {attempt})", 'warning')
+                _log(f"[ROBLOX] Timeout (tentativa {attempt})", 'warning')
             except requests.exceptions.ConnectionError as e:
                 last_error = f"Conexão falhou: {str(e)[:150]}"
                 _log(f"[ROBLOX] ❌ Conexão (tentativa {attempt}): {last_error}", 'error')
@@ -216,37 +277,91 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
 
 def verify_roblox_cookie(cookie=None):
     """
-    Verifica se o cookie do Roblox é válido autenticando no endpoint de perfil.
+    Verifica se o cookie do Roblox é válido usando múltiplos métodos.
     Retorna (is_valid, error_message).
     """
     if not cookie:
         return False, "Cookie não fornecido"
 
-    session = _create_session(cookie)
+    # Limpa o cookie
+    cookie = cookie.strip()
 
+    # Método 1: users.roblox.com/v1/users/authenticated
+    session = _create_session(cookie)
     try:
         resp = session.get('https://users.roblox.com/v1/users/authenticated', timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             user_id = data.get('id')
             username = data.get('name', 'Unknown')
-            _log(f"[ROBLOX] Cookie válido! Usuário: {username} (ID: {user_id})", 'info')
+            _log(f"[ROBLOX] Cookie VÁLIDO via users API! Usuário: {username} (ID: {user_id})", 'info')
             return True, None
         elif resp.status_code == 401:
-            return False, "Cookie inválido ou expirado (401)"
+            _log(f"[ROBLOX] Cookie inválido via users API (401)", 'warning')
         elif resp.status_code == 403:
-            return False, "Acesso negado - IP pode estar bloqueado (403)"
-        else:
-            return False, f"Erro inesperado: HTTP {resp.status_code}"
-    except requests.exceptions.ConnectionError:
-        return False, "Falha de conexão - verifique rede/proxy"
+            _log(f"[ROBLOX] Acesso negado (403) via users API — IP pode estar bloqueado", 'warning')
+            # 403 pode significar que o IP está bloqueado, mas cookie pode ser válido
+            # Tenta outro método para confirmar
     except Exception as e:
-        return False, f"Erro: {str(e)}"
+        _log(f"[ROBLOX] Error na users API: {e}", 'warning')
+
+    # Método 2: Verificar via página da conta (HTML)
+    session2 = _create_session(cookie, use_homepage_headers=True)
+    try:
+        resp = session2.get('https://www.roblox.com/my/account', timeout=15, allow_redirects=True)
+        if resp.status_code == 200 and 'Log In' not in resp.text and 'login' not in resp.url.lower():
+            # Conseguiu acessar a página de conta = autenticado
+            _log(f"[ROBLOX] Cookie VÁLIDO via página de conta!", 'info')
+            return True, None
+        elif resp.status_code == 200 and 'Log In' in resp.text:
+            _log(f"[ROBLOX] Cookie inválido - página redirecionou para login", 'warning')
+    except Exception as e:
+        _log(f"[ROBLOX] Error ao verificar via página: {e}", 'warning')
+
+    # Método 3: Verificar via catalog (se consegue acessar com cookie, o cookie é válido)
+    try:
+        resp = session.get('https://catalog.roblox.com/v1/catalog/items/details',
+                          json={'items': [{'id': 1, 'itemType': 'GamePass'}]},
+                          timeout=15)
+        if resp.status_code == 200:
+            _log(f"[ROBLOX] Cookie VÁLIDO via Catalog API (200)!", 'info')
+            return True, None
+        elif resp.status_code == 403:
+            _log(f"[ROBLOX] IP provavelmente bloqueado (403 em todas as APIs)", 'warning')
+            return False, "IP bloqueado pelo Roblox (403 em múltiplas APIs). Tente de outro IP ou use proxy."
+    except Exception as e:
+        _log(f"[ROBLOX] Error na catalog API: {e}", 'warning')
+
+    return False, "Cookie inválido, expirado ou IP bloqueado. Renove o cookie ou tente de outro IP."
 
 
-# ===================================================================
-# COMPRA DE GAMEPASS
-# ===================================================================
+def get_balancer_status():
+    """Testa rapidamente se a conexão com Roblox está funcionando.
+    Retorna list de resultados por endpoint."""
+    results = []
+    cookie = ROBLOX_COOKIE
+    if not cookie:
+        return [{'endpoint': 'N/A', 'status': 'erro', 'message': 'Cookie não configurado'}]
+
+    session = _create_session(cookie)
+    _get_xsrf_token(session)
+
+    endpoints = [
+        ('Usuário Autenticado', 'GET', 'https://users.roblox.com/v1/users/authenticated'),
+        ('Saldo Economy v1', 'GET', 'https://economy.roblox.com/v1/user/currency'),
+        ('Catalog Items', 'POST', 'https://catalog.roblox.com/v1/catalog/items/details'),
+    ]
+
+    for name, method, url in endpoints:
+        result = _test_endpoint(session, method, url, json_data={'items': [{'id': 1, 'itemType': 'GamePass'}]} if 'items' in url else None)
+        if 'error' in result:
+            results.append({'endpoint': name, 'status': 'erro', 'message': result['error']})
+        elif result.get('status_code') == 200:
+            results.append({'endpoint': name, 'status': 'ok', 'message': f"HTTP {result['status_code']}", 'data': result.get('body_preview', '')[:200]})
+        else:
+            results.append({'endpoint': name, 'status': 'erro', 'message': f"HTTP {result.get('status_code', '?')}: {result.get('body_preview', '')[:150]}"})
+
+    return results
 def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, max_retries=3):
     """Compra gamepass via API do Roblox (com proxy Cloudflare opcional)."""
     if not roblox_cookie:

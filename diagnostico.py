@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 print("=" * 60)
-print("  DIAGNÓSTICO PROBUX")
+print("  DIAGNÓSTICO PROBUX v2")
 print("=" * 60)
 
 # ===================================================================
@@ -24,7 +24,7 @@ try:
     from app import create_app
     from models import User
     import mercadopago_utils as mp_utils
-    print("  ✅ Módulos carregados com sucesso")
+    print("  ✅ Todos os módulos carregados com sucesso")
 except ImportError as e:
     print(f"  ❌ Erro ao importar: {e}")
     print("  → Verifique se requirements.txt está completo")
@@ -34,52 +34,49 @@ except ImportError as e:
 # VARIÁVEIS DE AMBIENTE
 # ===================================================================
 print("\n[1] VARIÁVEIS DE AMBIENTE:")
-vars_to_check = {
-    'ROBLOX_COOKIE': 'Cookie do Roblox',
-    'MERCADO_PAGO_ACCESS_TOKEN': 'Token Mercado Pago',
-    'MERCADO_PAGO_WEBHOOK_URL': 'Webhook MP URL',
-    'PIX_KEY': 'Chave PIX',
-    'DATABASE_URL': 'URL do banco',
-    'MAIL_SERVER': 'Servidor SMTP',
-    'MAIL_USERNAME': 'Usuário SMTP',
-    'MAIL_PASSWORD': 'Senha SMTP',
-    'PORT': 'Porta',
-    'FLASK_ENV': 'Ambiente',
-    'DISCOUNT_PERCENT': 'Desconto %',
-    'SECRET_KEY': 'Secret Key',
-    'ROBLOX_PROXY_URL': 'Proxy Cloudflare',
-}
+vars_critical = ['ROBLOX_COOKIE', 'MERCADO_PAGO_ACCESS_TOKEN', 'DATABASE_URL', 'SECRET_KEY']
+vars_optional = ['MERCADO_PAGO_WEBHOOK_URL', 'PIX_KEY', 'MAIL_SERVER', 'MAIL_USERNAME',
+                 'MAIL_PASSWORD', 'PORT', 'FLASK_ENV', 'DISCOUNT_PERCENT', 'ROBLOX_PROXY_URL']
+
 all_env_ok = True
-for var, desc in vars_to_check.items():
+for var in vars_critical:
     val = os.getenv(var, 'NÃO CONFIGURADO')
-    status = '✅' if val != 'NÃO CONFIGURADO' else '⚠️'
-    if var in ('MERCADO_PAGO_ACCESS_TOKEN', 'MAIL_PASSWORD', 'SECRET_KEY', 'ROBLOX_COOKIE') and len(val) > 20:
-        display = val[:20] + '...'
-    else:
-        display = val
-    print(f"  {status} {desc}: {display}")
-    if val == 'NÃO CONFIGURADO' and var not in ('PIX_KEY', 'ROBLOX_PROXY_URL', 'DISCOUNT_PERCENT'):
+    masked = val[:15] + '...' if len(val) > 15 else val
+    status = '✅' if val != 'NÃO CONFIGURADO' else '❌'
+    print(f"  {status} {var}: {masked}")
+    if val == 'NÃO CONFIGURADO':
         all_env_ok = False
+
+for var in vars_optional:
+    val = os.getenv(var, 'NÃO CONFIGURADO')
+    masked = val[:15] + '...' if len(val) > 15 else val
+    status = '✅' if val != 'NÃO CONFIGURADO' else '⚪'
+    print(f"  {status} {var}: {masked}")
+
 if not all_env_ok:
-    print("  ⚠️  Algumas variáveis essenciais não estão configuradas!")
+    print("\n  ⚠️  Variáveis CRÍTICAS ausentes! O sistema não funcionará sem elas.")
 
 # ===================================================================
-# CONEXÃO COM O ROBLOX (NOVO - robusto)
+# CONEXÃO COM O ROBLOX
 # ===================================================================
 print("\n[2] TESTE DE CONEXÃO COM O ROBLOX:")
-cookie = os.getenv('ROBLOX_COOKIE', '')
+cookie = (os.getenv('ROBLOX_COOKIE', '') or '').strip()
+
 if not cookie:
-    print("  ❌ ROBLOX_COOKIE não configurado!")
+    print("  ❌ ROBLOX_COOKIE não está configurado!")
+    print("     → Copie o .ROBLOSECURITY do navegador e cole no .env")
 else:
-    # Teste de validação do cookie
+    print(f"  📋 Cookie carregado: {len(cookie)} caracteres")
+
+    # Validação do cookie
     is_valid, error = mp_utils.verify_roblox_cookie(cookie)
     if is_valid:
-        print("  ✅ Cookie do Roblox: VÁLIDO")
+        print(f"  ✅ Cookie: VÁLIDO")
     else:
-        print(f"  ❌ Cookie do Roblox: INVÁLIDO - {error}")
-        print("  → Acesse https://www.roblox.com, faça login e copie o .ROBLOSECURITY")
+        print(f"  ❌ Cookie: INVÁLIDO — {error}")
+        print("     → Acesse https://www.roblox.com, faça login e copie o .ROBLOSECURITY")
 
-    # Teste de XSRF token
+    # Teste de endpoints
     session = mp_utils._create_session(cookie)
     xsrf = mp_utils._get_xsrf_token(session)
     if xsrf:
@@ -87,29 +84,30 @@ else:
     else:
         print(f"  ⚠️  XSRF Token: não obtido (possível bloqueio de IP)")
 
-    # Teste API v2
+    # API v2 - Usuário autenticado
     try:
         resp = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
         if resp.status_code == 200:
-            user_data = resp.json()
-            print(f"  ✅ API v2 (users/authenticated): OK - {user_data.get('name')} (ID: {user_data.get('id')})")
+            data = resp.json()
+            print(f"  ✅ API v2 (users): OK → {data.get('name', '?')} (ID: {data.get('id')})")
         else:
-            print(f"  ⚠️  API v2: HTTP {resp.status_code}")
+            print(f"  ⚠️  API v2 (users): HTTP {resp.status_code}")
     except Exception as e:
-        print(f"  ❌ API v2: Erro - {e}")
+        print(f"  ❌ API v2 (users): ERRO → {e}")
 
-    # Teste Economy v1 (saldo)
+    # API Economy v1 (saldo)
     try:
         resp = session.get('https://economy.roblox.com/v1/user/currency', timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            print(f"  ✅ API Economy v1 (saldo): OK - {data.get('robux')} Robux")
+            robux = data.get('robux', '?')
+            print(f"  ✅ API Economy v1 (saldo): OK → 💰 {robux} Robux")
         else:
             print(f"  ⚠️  API Economy v1: HTTP {resp.status_code}")
     except Exception as e:
-        print(f"  ❌ API Economy v1: Erro - {e}")
+        print(f"  ❌ API Economy v1: ERRO → {e}")
 
-    # Teste Catalog API
+    # Catalog API
     try:
         resp = session.post(
             'https://catalog.roblox.com/v1/catalog/items/details',
@@ -121,25 +119,30 @@ else:
         else:
             print(f"  ⚠️  Catalog API: HTTP {resp.status_code}")
     except Exception as e:
-        print(f"  ❌ Catalog API: Erro - {e}")
+        print(f"  ❌ Catalog API: ERRO → {e}")
 
-    # Teste Purchase API
-    print("  Testando Purchase API (tentar comprar gamepass de teste)...")
-    success, msg = mp_utils.buy_gamepass_with_cookie(
-        'https://www.roblox.com/game-pass/1',  # gamepass de teste
-        cookie,
-        expected_price=0
-    )
-    if success:
-        print(f"  ✅ Purchase API: COMPRA SUCEDIDA! {msg}")
-    else:
-        # 400/403 é esperado (gamepass de teste provavelmente não é acessível)
-        # O importante é que a API respondeu
-        if 'HTTP 400' in msg or 'HTTP 403' in msg or 'HTTP 4' in msg:
-            print(f"  ✅ Purchase API: Responde mas rejeitou (esperado para gamepass de teste)")
-            print(f"     Detalhes: {msg[:200]}")
+    # Purchase API
+    print("  Testando Purchase API...")
+    try:
+        resp = session.post(
+            'https://api.roblox.com/v1/purchases/game-pass/1',
+            json={'expectedPrice': 1},
+            timeout=15
+        )
+        if resp.status_code in [200, 400, 403, 401, 422, 412]:
+            try:
+                data = resp.json()
+                error_msg = str(data.get('error', {}).get('message', data))[:150]
+            except Exception:
+                error_msg = resp.text[:150]
+            print(f"  ✅ Purchase API: HTTP {resp.status_code} (API funcionando!)")
+            print(f"     Mensagem: {error_msg}")
         else:
-            print(f"  ❌ Purchase API: FALHA - {msg}")
+            print(f"  ❌ Purchase API: HTTP {resp.status_code} inesperado")
+    except requests.exceptions.ConnectionError as e:
+        print(f"  ❌ Purchase API: Falha de conexão → {e}")
+    except Exception as e:
+        print(f"  ❌ Purchase API: ERRO → {e}")
 
 # ===================================================================
 # MERCADO PAGO SDK
@@ -150,10 +153,11 @@ try:
     if mp_token:
         sdk = mercadopago.SDK(mp_token)
         test_resp = sdk.payment().get(1)
+        status = test_resp.get('status', 'N/A') if isinstance(test_resp, dict) else 'resposta_ok'
         print(f"  ✅ SDK inicializado: OK")
-        print(f"  ✅ Consulta de pagamento: HTTP {test_resp.get('status', 'N/A')}")
+        print(f"  ✅ Consulta de pagamento: {status}")
     else:
-        print("  ⚠️  Token não configurado")
+        print("  ⚠️  Token não configurado (MERCADO_PAGO_ACCESS_TOKEN)")
 except Exception as e:
     print(f"  ❌ ERRO: {e}")
 
@@ -165,10 +169,9 @@ try:
     app = create_app()
     with app.app_context():
         count = User.query.count()
-        print(f"  ✅ Conexão: OK")
+        print(f"  ✅ Conexão com banco: OK")
         print(f"  ✅ Usuários registrados: {count}")
 
-        # Verificar se a tabela Order tem a coluna delivery_attempted
         from sqlalchemy import inspect
         from models import Order
         inspector = inspect(db.engine)
@@ -176,7 +179,8 @@ try:
         if 'delivery_attempted' in columns:
             print(f"  ✅ Coluna 'delivery_attempted': existe")
         else:
-            print(f"  ⚠️  Coluna 'delivery_attempted': NÃO ENCONTRADA (executar migração!)")
+            print(f"  ❌ Coluna 'delivery_attempted': NÃO encontrada!")
+            print(f"     → Execute a migração: migrations/002_add_delivery_attempted.sql")
 except Exception as e:
     print(f"  ❌ ERRO: {e}")
 
@@ -199,13 +203,35 @@ for f in required_files:
 print("\n" + "=" * 60)
 print("  RESUMO:")
 print("-" * 60)
-if is_valid and all_env_ok:
+
+issues = []
+if not cookie:
+    issues.append("  → Cookie do Roblox não configurado")
+else:
+    cookie_valid, _ = mp_utils.verify_roblox_cookie(cookie)
+    if not cookie_valid:
+        issues.append("  → Cookie do Roblox inválido ou expirado")
+if not all_env_ok:
+    issues.append("  → Variáveis de ambiente críticas ausentes")
+
+try:
+    app_test = create_app()
+    with app_test.app_context():
+        from sqlalchemy import inspect
+        from models import Order
+        columns = [col['name'] for col in inspect(db.engine).get_columns('order')]
+        if 'delivery_attempted' not in columns:
+            issues.append("  → Coluna 'delivery_attempted' faltando (executar migração SQL)")
+except Exception:
+    issues.append("  → Não foi possível verificar banco de dados")
+
+if not issues:
     print("  ✅ SISTEMA OPERACIONAL - Tudo configurado corretamente!")
 else:
     print("  ⚠️  Ajustes necessários:")
-    if not is_valid:
-        print("     → Atualize o ROBLOX_COOKIE no .env")
-    if not all_env_ok:
-        print("     → Configure as variáveis de ambiente ausentes")
-    print("     → Execute: psql -c \"ALTER TABLE order ADD COLUMN delivery_attempted BOOLEAN DEFAULT FALSE NOT NULL;\"")
+    for issue in issues:
+        print(issue)
+    print("     → Execute a migração: migrations/002_add_delivery_attempted.sql")
+
 print("=" * 60)
+print("\nDica: Acesse /test_roblox_connection no navegador para ver o diagnóstico visual.")

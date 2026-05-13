@@ -3,9 +3,16 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Teste de Conexão - Probux</title>
+    <title>Teste de Conexão Roblox - Probux</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+        .card-endpoint { transition: transform 0.2s; }
+        .card-endpoint:hover { transform: translateY(-2px); }
+        .status-badge { font-size: 0.75rem; }
+        pre { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; font-size: 0.8rem; overflow-x: auto; max-height: 150px; }
+    </style>
 </head>
 <body>
 <section class="section">
@@ -13,117 +20,90 @@
         <h1 class="title has-text-centered" style="color: #667eea;">
             <i class="fas fa-plug"></i> Teste de Conexão Roblox
         </h1>
+        <p class="has-text-centered has-text-grey">Diagnóstico completo de todas as conexões com o Roblox</p>
 
-        {% if results.get('message') %}
-        <div class="notification is-danger is-light">
-            <strong>⚠️ {{ results['message'] }}</strong>
+        {% if error %}
+        <div class="notification is-danger is-light mt-4">
+            <button class="delete" onclick="this.parentElement.style.display='none'"></button>
+            <strong>❌ {{ error }}</strong>
         </div>
         {% endif %}
 
-        <!-- Proxy -->
-        <div class="notification is-light">
-            <p><strong>Proxy:</strong> {{ 'Ativado (' + results['proxy'] + ')' if results['proxy'] else 'Desativado (conexão direta)' }}</p>
-        </div>
-
-        <!-- Cookie -->
-        <div class="card mb-4">
-            <div class="card-content">
-                <p class="title is-6">
-                    <i class="fas fa-{% if results['cookie_valid'] %}check-circle has-text-success{% else %}times-circle has-text-danger{% endif %}"></i>
-                    Cookie do Roblox
-                </p>
-                <p class="subtitle is-6">
-                    {% if results['cookie_valid'] %}
-                        <span class="tag is-success">Válido</span>
-                    {% else %}
-                        <span class="tag is-danger">Inválido ou não configurado</span>
-                    {% endif %}
-                </p>
+        <!-- Cookie Status -->
+        <div class="columns mt-4">
+            <div class="column">
+                <div class="card {% if cookie_valid %}has-background-success{% else %}has-background-danger{% endif %}">
+                    <div class="card-content has-text-white">
+                        <p class="title is-5 has-text-white">
+                            <i class="fas fa-{% if cookie_valid %}check-circle{% else %}times-circle{% endif %}"></i>
+                            Cookie do Roblox
+                        </p>
+                        <p class="subtitle is-6 has-text-white">
+                            {% if cookie_valid %}Cookie válido e ativo{% else %}Inválido, expirado ou ausente{% endif %}
+                        </p>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- API v2 -->
-        <div class="card mb-4">
-            <div class="card-content">
-                <p class="title is-6">
-                    <i class="fas fa-{% if results['api_v2']['status'] == 'ok' %}check-circle has-text-success{% else %}times-circle has-text-danger{% endif %}"></i>
-                    API Roblox v2 (Usuário Autenticado)
-                </p>
-                <p class="subtitle is-6">
-                    <span class="tag {% if results['api_v2']['status'] == 'ok' %}is-success{% else %}is-danger{% endif %}">
-                        {{ results['api_v2']['status'].upper() }}
-                    </span>
-                    {{ results['api_v2']['message'] }}
-                </p>
+        <!-- Endpoints -->
+        {% if endpoints %}
+        <div class="columns is-multiline mt-4">
+            {% for ep in endpoints %}
+            <div class="column is-half">
+                <div class="card card-endpoint {% if ep.status == 'ok' %}has-background-success{% elif ep.status == 'ok_partial' %}has-background-info{% elif ep.status == 'warning' %}has-background-warning{% else %}has-background-danger{% endif %}">
+                    <div class="card-content">
+                        <div class="level">
+                            <div class="level-left">
+                                <p class="title is-6 mb-0">
+                                    {% if ep.status == 'ok' %}<i class="fas fa-check-circle has-text-white"></i>{% elif ep.status == 'ok_partial' %}<i class="fas fa-exclamation-circle has-text-white"></i>{% elif ep.status == 'warning' %}<i class="fas fa-exclamation-triangle has-text-white"></i>{% else %}<i class="fas fa-times-circle has-text-white"></i>{% endif %}
+                                    {{ ep.name }}
+                                </p>
+                            </div>
+                            <div class="level-right">
+                                <span class="tag status-badge {% if ep.status == 'ok' %}is-success{% elif ep.status == 'ok_partial' %}is-info{% elif ep.status == 'warning' %}is-warning{% else %}is-danger{% endif %}">
+                                    {{ ep.status | upper }}
+                                </span>
+                            </div>
+                        </div>
+                        <p class="subtitle is-6 has-text-white">{{ ep.message }}</p>
+                        {% if ep.raw %}
+                        <details class="mt-2">
+                            <summary class="has-text-white" style="cursor:pointer;font-size:0.8rem;">Ver detalhes (raw)</summary>
+                            <pre class="mt-2">{{ ep.raw }}</pre>
+                        </details>
+                        {% endif %}
+                    </div>
+                </div>
             </div>
+            {% endfor %}
         </div>
-
-        <!-- API v1 Economy -->
-        <div class="card mb-4">
-            <div class="card-content">
-                <p class="title is-6">
-                    <i class="fas fa-{% if results['api_v1']['status'] == 'ok' %}check-circle has-text-success{% else %}times-circle has-text-danger{% endif %}"></i>
-                    API Economy v1 (Saldo)
-                </p>
-                <p class="subtitle is-6">
-                    <span class="tag {% if results['api_v1']['status'] == 'ok' %}is-success{% else %}is-danger{% endif %}">
-                        {{ results['api_v1']['status'].upper() }}
-                    </span>
-                    {{ results['api_v1']['message'] }}
-                </p>
-            </div>
-        </div>
-
-        <!-- Catalog API -->
-        <div class="card mb-4">
-            <div class="card-content">
-                <p class="title is-6">
-                    <i class="fas fa-{% if results['catalog_api']['status'] == 'ok' %}check-circle has-text-success{% else %}times-circle has-text-danger{% endif %}"></i>
-                    Catalog API
-                </p>
-                <p class="subtitle is-6">
-                    <span class="tag {% if results['catalog_api']['status'] == 'ok' %}is-success{% else %}is-danger{% endif %}">
-                        {{ results['catalog_api']['status'].upper() }}
-                    </span>
-                    {{ results['catalog_api']['message'] }}
-                </p>
-            </div>
-        </div>
-
-        <!-- Purchase API -->
-        <div class="card mb-4">
-            <div class="card-content">
-                <p class="title is-6">
-                    <i class="fas fa-{% if results['purchase_api']['status'] == 'ok' %}check-circle has-text-success{% else %}times-circle has-text-danger{% endif %}"></i>
-                    Purchase API (Compra)
-                </p>
-                <p class="subtitle is-6">
-                    <span class="tag {% if results['purchase_api']['status'] == 'ok' %}is-success{% else %}is-danger{% endif %}">
-                        {{ results['purchase_api']['status'].upper() }}
-                    </span>
-                    {{ results['purchase_api']['message'] }}
-                </p>
-            </div>
-        </div>
+        {% endif %}
 
         <!-- Resultado Geral -->
-        <div class="notification {% if results['overall_success'] %}is-success{% else %}is-danger{% endif %} is-light mt-5">
+        <div class="notification {% if overall_success %}is-success{% else %}is-danger{% endif %} is-light mt-5">
             <p class="has-text-weight-bold is-size-5">
-                <i class="fas fa-{% if results['overall_success'] %}check-circle{% else %}exclamation-circle{% endif %}"></i>
-                {% if results['overall_success'] %}
-                    ✅ Todas as conexões OK! Sistema funcionando normalmente.
+                <i class="fas fa-{% if overall_success %}check-circle{% else %}exclamation-circle{% endif %}"></i>
+                {% if overall_success %}
+                    ✅ TUDO FUNCIONANDO! Sistema 100% operacional.
+                {% elif cookie_valid %}
+                    ⚠️ Conexão parcial — alguns endpoints não responderam. Tente usar um proxy Cloudflare.
                 {% else %}
-                    ❌ Alguma conexão falhou. Verifique o cookie e tente novamente.
+                    ❌ Sistema NÃO está operacional. Corrija o cookie ou use um proxy.
                 {% endif %}
             </p>
         </div>
 
+        <!-- Ações -->
         <div class="has-text-centered mt-5">
             <a href="/" class="button is-primary">
                 <i class="fas fa-arrow-left"></i>&nbsp; Voltar ao Início
             </a>
             <a href="/test_roblox_connection" class="button is-primary ml-3">
                 <i class="fas fa-sync-alt"></i>&nbsp; Testar Novamente
+            </a>
+            <a href="/dashboard" class="button is-light ml-3">
+                <i class="fas fa-tachometer-alt"></i>&nbsp; Dashboard
             </a>
         </div>
     </div>
