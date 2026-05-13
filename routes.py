@@ -33,7 +33,7 @@ def get_roblox_balance(roblox_cookie):
         found_balance = None
 
         # Método 1: Via proxy Node.js (se disponível)
-        if USE_PROXY and ROBLOX_PROXY_URL:
+        if mercadopago_utils.USE_PROXY and mercadopago_utils.ROBLOX_PROXY_URL:
             # Verificar autenticidade via users API
             data, status, err = mercadopago_utils._proxy_request(
                 'GET',
