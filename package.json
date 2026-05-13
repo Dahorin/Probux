@@ -1,5 +1,9 @@
 {
+  "type": "commonjs",
   "dependencies": {
     "puppeteer": "^24.42.0"
+  },
+  "scripts": {
+    "proxy": "node proxy-roblox.js"
   }
 }

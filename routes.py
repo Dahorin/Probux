@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 def get_roblox_balance(roblox_cookie):
     """
-    Consulta o saldo de Robux da conta do Roblox usando o cookie.
-    Usa sessão robusta com múltiplos fallbacks de API.
+    Consulta o saldo de Robux da conta do Roblox.
+    Usa proxy Node.js se configurado (evita bloqueio de IP).
     Retorna o saldo ou None em caso de erro.
     """
     if not roblox_cookie:
@@ -30,52 +30,109 @@ def get_roblox_balance(roblox_cookie):
 
     try:
         roblox_cookie = roblox_cookie.strip()
-        session = mercadopago_utils._create_session(roblox_cookie)
+        found_balance = None
 
-        # Obtém XSRF token
-        mercadopago_utils._get_xsrf_token(session)
+        # Método 1: Via proxy Node.js (se disponível)
+        if USE_PROXY and ROBLOX_PROXY_URL:
+            # Verificar autenticidade via users API
+            data, status, err = mercadopago_utils._proxy_request(
+                'GET',
+                '/v1/users/authenticated',
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                         'Cookie': f'.ROBLOSECURITY={roblox_cookie}'}
+            )
+            if status == 200 and isinstance(data, dict):
+                print(f"[ROBLOX] Usuário autenticado: {data.get('name')} (ID: {data.get('id')})")
 
-        # Método 1: Economy API v1 (endpoint direto)
+                # Agora pega o saldo via economy API v1
+                data2, status2, err2 = mercadopago_utils._proxy_request(
+                    'GET',
+                    '/v1/user/currency',
+                    headers={
+                        'User-Agent': 'Mozilla/5.0',
+                        'Cookie': f'.ROBLOSECURITY={roblox_cookie}',
+                        'X-CSRF-TOKEN': ''
+                    },
+                    timeout=15
+                )
+                if status2 == 200:
+                    if isinstance(data2, dict):
+                        found_balance = data2.get('robux') or data2.get('data', {}).get('robux')
+                    elif isinstance(data2, str):
+                        try:
+                            d = json.loads(data2)
+                            found_balance = d.get('robux')
+                        except Exception:
+                            pass
+
+                if found_balance is not None:
+                    print(f"[ROBLOX] 💰 Saldo via proxy: {found_balance} Robux")
+                    return found_balance
+
+            # Se não conseguiu via users+economy, tenta economy direto
+            data3, status3, err3 = mercadopago_utils._proxy_request(
+                'GET',
+                '/v1/user/currency',
+                headers={
+                    'User-Agent': 'Mozilla/5.0',
+                    'Cookie': f'.ROBLOSECURITY={roblox_cookie}',
+                },
+                timeout=15
+            )
+            if status3 == 200:
+                if isinstance(data3, dict):
+                    found_balance = data3.get('robux') or data3.get('data', {}).get('robux')
+                elif isinstance(data3, str):
+                    try:
+                        d = json.loads(data3)
+                        found_balance = d.get('robux')
+                    except Exception:
+                        pass
+            if found_balance is not None:
+                print(f"[ROBLOX] 💰 Saldo via proxy (direto): {found_balance} Robux")
+                return found_balance
+
+            if err:
+                print(f"[ROBLOX] Proxy erro: {err}")
+
+        # Método 2: Conexão direta (sem proxy)
+        import requests as req_lib
+        s = req_lib.Session()
+        s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com', path='/')
+        s.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+        })
+
+        # Pega XSRF
         try:
-            resp = session.get('https://economy.roblox.com/v1/user/currency', timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                robux = data.get('robux')
-                if robux is not None:
-                    return robux
-                # Tenta extrair do campo 'data' se vier em formato diferente
-                if isinstance(data, dict) and 'robux' in data:
-                    return data['robux']
-        except Exception as e:
-            print(f"[ROBLOX] Economy v1 erro: {e}")
+            r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
+            xsrf = r.headers.get('X-CSRF-TOKEN')
+            if xsrf:
+                s.headers['X-CSRF-TOKEN'] = xsrf
+        except Exception:
             pass
 
-        # Método 2: Usuário autenticado + Economy v2
+        # Tenta Economy v1 direto
         try:
-            resp_user = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+            resp = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get('robux')
+        except Exception as e:
+            print(f"[ROBLOX] Economy direto erro: {e}")
+
+        # Tenta via users API + economy v2
+        try:
+            resp_user = s.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
             if resp_user.status_code == 200:
                 user_data = resp_user.json()
                 user_id = user_data.get('id')
                 if user_id:
-                    resp = session.get(f'https://economy.roblox.com/v2/users/{user_id}/currency', timeout=15)
+                    resp = s.get(f'https://economy.roblox.com/v2/users/{user_id}/currency', timeout=15)
                     if resp.status_code == 200:
                         data = resp.json()
-                        robux = data.get('robux')
-                        if robux is not None:
-                            return robux
-        except Exception:
-            pass
-
-        # Método 3: Tentar via catalog (algumas contas retornam via esse endpoint)
-        try:
-            resp = session.post(
-                'https://catalog.roblox.com/v1/catalog/items/details',
-                json={'items': [{'id': 1, 'itemType': 'GamePass'}]},
-                timeout=10
-            )
-            if resp.status_code != 403:
-                # Se responde, ao menos a sessão funciona
-                print(f"[ROBLOX] Catalog API responde (status {resp.status_code}), mas saldo indisponível por este endpoint")
+                        return data.get('robux')
         except Exception:
             pass
 
