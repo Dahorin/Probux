@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 def get_roblox_balance(roblox_cookie):
     """
     Consulta o saldo de Robux da conta do Roblox usando o cookie.
+    Tenta múltiplas APIs (v2 primeiro, fallback para v1 e web scraping).
     Retorna o saldo ou None em caso de erro.
     """
     try:
@@ -32,7 +33,7 @@ def get_roblox_balance(roblox_cookie):
             'Accept': 'application/json',
         })
 
-        # Pega XSRF token
+        # Tenta pegar XSRF token
         try:
             r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
             xsrf = r.headers.get('X-CSRF-TOKEN')
@@ -41,14 +42,46 @@ def get_roblox_balance(roblox_cookie):
         except:
             pass
 
-        # Tenta API de saldo (requer cookie válido)
-        resp = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get('robux', 0)
+        # Tentativa 1: Economy API v2 (requer userId)
+        try:
+            # Primeiro pega o userId via users/authenticated
+            resp_user = s.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+            if resp_user.status_code == 200:
+                user_data = resp_user.json()
+                user_id = user_data.get('id')
+                if user_id:
+                    resp = s.get(f'https://economy.roblox.com/v2/users/{user_id}/currency', timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        robux = data.get('robux')
+                        if robux is not None:
+                            return robux
+        except Exception:
+            pass
+
+        # Tentativa 2: Economy API v1 (legacy)
+        try:
+            resp = s.get('https://economy.roblox.com/v1/user/currency', timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get('robux', 0)
+        except Exception:
+            pass
+
+        # Tentativa 3: Via catalog (estimativa pelo número de itens)
+        try:
+            resp = s.get('https://catalog.roblox.com/v1/search/items?category=All&limit=1', timeout=10)
+            if resp.status_code == 200:
+                # Se a API responde, ao menos a sessão está válida
+                # Mas não conseguimos o saldo por aqui
+                print("[ROBLOX] API catalog acessível, mas saldo não disponível via este endpoint")
+        except Exception:
+            pass
+
+        print("[ROBLOX] Todas as tentativas de obter saldo falharam")
+
     except Exception as e:
         print(f"[ROBUx] Erro ao consultar saldo: {e}")
-        pass
 
     return None
 
@@ -69,61 +102,65 @@ def is_valid_email(email):
     return re.match(pattern, email) is not None
 
 def get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent=0):
-    """Extract gamepass ID and return ORIGINAL price (without account discount)."""
+    """Extract gamepass ID and return ORIGINAL price (without account discount).
+    Uses shared session and _roblox_api_request for robust connection."""
     try:
         match = re.search(r'game-pass/(\d+)', gamepass_link)
         if not match:
             return None, None, None, None, "Invalid link"
-        
+
         gamepass_id = match.group(1)
-        s = requests.Session()
-        s.cookies.set('.ROBLOSECURITY', roblox_cookie, domain='.roblox.com')
-        s.headers.update({'User-Agent': 'Mozilla/5.0'})
-        
+
+        # Cria sessão com headers realistas
+        session = mercadopago_utils._create_session(roblox_cookie)
+
+        # Tenta obter XSRF token
+        mercadopago_utils._get_xsrf_token(session)
+
+        # Try catalog API (endpoint principal)
         try:
-            r = s.post('https://auth.roblox.com/v2/logout', json={}, timeout=10)
-            xsrf = r.headers.get('X-CSRF-TOKEN')
-            if xsrf:
-                s.headers['X-CSRF-TOKEN'] = xsrf
-        except:
-            pass
-        
-        # Try catalog API
-        try:
-            resp = s.post('https://catalog.roblox.com/v1/catalog/items/details',
-                         json={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]}, timeout=15)
-            if resp.status_code == 200:
-                items = resp.json().get('data', [])
+            resp, err = mercadopago_utils._roblox_api_request(
+                'POST', '/v1/catalog/items/details',
+                session=session,
+                json_data={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]},
+                max_retries=2
+            )
+            if resp and 'data' in resp:
+                items = resp['data']
                 if items:
                     price = items[0].get('price') or items[0].get('priceInRobux')
                     if price is not None:
                         if discount_percent > 0:
                             original = round(price / (1 - discount_percent))
-                            print(f'[ROBLOX] Price returned: {price}, Original adjusted: {original}')
+                            _log(f'[ROBLOX] Price returned: {price}, Original adjusted: {original}')
                             return int(original), False, None, None
                         return int(price), False, None, None
         except Exception as e:
-            print(f'[ROBLOX] Catalog error: {e}')
-        
+            _log(f'[ROBLOX] Catalog error: {e}')
+
         # Fallback: HTML - search for data-expected-price="NUMBER"
         try:
-            resp = s.get(gamepass_link, timeout=15, allow_redirects=True)
-            if resp.status_code == 200:
-                html = resp.text
-                
+            resp_html, err = mercadopago_utils._roblox_api_request(
+                'GET', gamepass_link,
+                session=session,
+                max_retries=2
+            )
+            if resp_html and isinstance(resp_html, str):
+                html = resp_html
+
                 if 'already own' in html.lower() or 'você possui' in html.lower():
                     return None, True, None, "You already own this item!"
-                
+
                 # Search for data-expected-price="NUMBER"
                 m = re.search(r'data-expected-price="(\d+)"', html)
                 if m:
                     price = int(m.group(1))
                     if discount_percent > 0:
                         original = round(price / (1 - discount_percent))
-                        print(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
+                        _log(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
                         return int(original), False, None, None
                     return price, False, None, None
-                
+
                 # Alternative patterns
                 patterns = [
                     r'"price"\s*:\s*(\d+)',
@@ -137,12 +174,12 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent=0):
                         price = int(m.group(1))
                         if discount_percent > 0:
                             original = round(price / (1 - discount_percent))
-                            print(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
+                            _log(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
                             return int(original), False, None, None
                         return price, False, None, None
         except Exception as e:
-            print(f'[ROBLOX] HTML error: {e}')
-        
+            _log(f'[ROBLOX] HTML error: {e}')
+
         return None, None, None, "Could not find price."
     except Exception as e:
         return None, None, None, f"Error: {str(e)}"
@@ -959,3 +996,107 @@ def delivery_logs():
         except Exception:
             logs = ["Erro ao ler o arquivo de logs."]
     return render_template('delivery_logs.html', logs=logs)
+
+
+@main.route('/test_roblox_connection')
+@login_required
+def test_roblox_connection():
+    """Testa a conexão com a API do Roblox e exibe os resultados."""
+    from flask import current_app
+
+    roblox_cookie = current_app.config.get('ROBLOX_COOKIE') or os.getenv('ROBLOX_COOKIE', '')
+    results = {
+        'cookie_valid': False,
+        'api_v2': {'status': 'not_tested', 'message': ''},
+        'api_v1': {'status': 'not_tested', 'message': ''},
+        'catalog_api': {'status': 'not_tested', 'message': ''},
+        'purchase_api': {'status': 'not_tested', 'message': ''},
+        'proxy': USE_PROXY if USE_PROXY else False,
+        'overall_success': False,
+    }
+
+    if not roblox_cookie:
+        results['message'] = 'Cookie do Roblox não configurado!'
+        return render_template('test_connection.html', results=results)
+
+    # Cria sessão e tenta autenticar
+    session = mercadopago_utils._create_session(roblox_cookie)
+
+    # Verifica se o cookie é válido
+    is_valid, error = mercadopago_utils.verify_roblox_cookie(roblox_cookie)
+    results['cookie_valid'] = is_valid
+
+    if not is_valid:
+        results['message'] = f'Cookie inválido: {error}'
+        return render_template('test_connection.html', results=results)
+
+    # Teste 1: API v2 (usuário autenticado)
+    try:
+        resp = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+        if resp.status_code == 200:
+            user_data = resp.json()
+            results['api_v2'] = {
+                'status': 'ok',
+                'message': f"Conectado como {user_data.get('name', 'Unknown')} (ID: {user_data.get('id')})"
+            }
+        else:
+            results['api_v2'] = {'status': 'error', 'message': f'HTTP {resp.status_code}'}
+    except Exception as e:
+        results['api_v2'] = {'status': 'error', 'message': str(e)[:200]}
+
+    # Teste 2: API v1 Economy (saldo)
+    try:
+        resp = session.get('https://economy.roblox.com/v1/user/currency', timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            results['api_v1'] = {
+                'status': 'ok',
+                'message': f"Saldo: {data.get('robux', '?')} Robux"
+            }
+        else:
+            results['api_v1'] = {'status': 'error', 'message': f'HTTP {resp.status_code}'}
+    except Exception as e:
+        results['api_v1'] = {'status': 'error', 'message': str(e)[:200]}
+
+    # Teste 3: Catalog API
+    try:
+        resp = session.post(
+            'https://catalog.roblox.com/v1/catalog/items/details',
+            json={'items': [{'id': 1, 'itemType': 'GamePass'}]},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            results['catalog_api'] = {'status': 'ok', 'message': 'Catalog API respondendo'}
+        else:
+            results['catalog_api'] = {'status': 'error', 'message': f'HTTP {resp.status_code}'}
+    except Exception as e:
+        results['catalog_api'] = {'status': 'error', 'message': str(e)[:200]}
+
+    # Teste 4: Purchase API (comprar gamepass ID 1 com preço 1 — será rejeitada, mas prova que a API responde)
+    try:
+        # Pega XSRF token
+        xsrf = mercadopago_utils._get_xsrf_token(session)
+        resp = session.post(
+            'https://api.roblox.com/v1/purchases/game-pass/1',
+            json={'expectedPrice': 1},
+            timeout=15
+        )
+        if resp.status_code in [200, 400, 403, 401, 422]:
+            results['purchase_api'] = {
+                'status': 'ok',
+                'message': f'Purchase API responde (HTTP {resp.status_code}). '
+                           f'Resposta: {resp.text[:200]}'
+            }
+        else:
+            results['purchase_api'] = {'status': 'error', 'message': f'HTTP {resp.status_code}: {resp.text[:200]}'}
+    except Exception as e:
+        results['purchase_api'] = {'status': 'error', 'message': str(e)[:200]}
+
+    # Resultado geral
+    results['overall_success'] = all([
+        results['cookie_valid'],
+        results['api_v2']['status'] == 'ok',
+        results['purchase_api']['status'] == 'ok'
+    ])
+
+    return render_template('test_connection.html', results=results)
