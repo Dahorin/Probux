@@ -79,6 +79,7 @@ class Order(db.Model):
     payment_claimed_at = db.Column(db.DateTime, nullable=True)  # Quando o usuário afirmou ter pagado
     delivered = db.Column(db.Boolean, default=False)  # Se a Gamepass foi entregue
     delivered_at = db.Column(db.DateTime, nullable=True)  # Quando foi entregue
+    delivery_attempted = db.Column(db.Boolean, default=False)  # Se já tentamos entregar (evita loop)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref='orders')
     items = db.relationship('OrderItem', backref='order', lazy=True, cascade='all, delete-orphan')

@@ -279,7 +279,7 @@
                     </div>
                 </div>
 
-                {% if order.status in ['pending', 'payment_claimed', 'paid'] and order.mp_payment_id %}
+                {% if order.status in ['pending', 'payment_claimed'] and order.mp_payment_id %}
                 <div class="notification is-info is-light mt-3" id="autoCheckNotification">
                     <p><i class="fas fa-sync-alt fa-spin"></i> Verificando pagamento a cada 5 segundos...</p>
                     {% if order.status == 'pending' %}

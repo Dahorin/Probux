@@ -775,9 +775,15 @@ def mercadopago_webhook():
                         mp_status = payment.get('status')
 
                         if mp_status == 'approved':
-                            # Evita sobrescrever status 'delivered' já processado
                             if order.status == 'delivered':
                                 print(f"[WEBHOOK] Pedido {order.id}: Já entregue, ignorando notificação duplicada.")
+                                return jsonify({'status': 'processed'}), 200
+                            elif order.delivery_attempted:
+                                print(f"[WEBHOOK] Pedido {order.id}: Entrega já tentada anteriormente, ignorando.")
+                                if order.status != 'paid':
+                                    order.status = 'paid'
+                                    db.session.commit()
+                                return jsonify({'status': 'processed'}), 200
                             elif order.status == 'paid':
                                 # Já está como pago, tenta entregar se ainda não entregou
                                 print(f"[WEBHOOK] Pedido {order.id}: Status 'paid', tentando entregar...")
@@ -827,11 +833,15 @@ def check_payment(order_id):
         mp_status = mercadopago_utils.get_payment_status(order.mp_payment_id)
 
         if mp_status == 'approved' and order.status not in ['delivered']:
-            # Se ainda não entregou, marca como pago e tenta entregar
+            # Se ainda não tentou entregar, tenta agora
             if order.status != 'paid':
                 order.status = 'paid'
                 db.session.commit()
                 print(f"[CHECK_PAYMENT] Pedido {order.id}: Pagamento aprovado! Iniciando entrega...")
+            elif order.delivery_attempted:
+                # Já tentou entregar e não conseguiu — não tenta de novo
+                print(f"[CHECK_PAYMENT] Pedido {order.id}: Entrega já tentada anteriormente, aguardando retry manual.")
+                return jsonify({'status': order.status})
             else:
                 print(f"[CHECK_PAYMENT] Pedido {order.id}: Status 'paid', tentando entregar...")
 

@@ -291,6 +291,9 @@ def deliver_gamepasses(order, notify_user=True):
 
     all_success = success_count == len(gamepass_items) and len(gamepass_items) > 0
 
+    # Marca que já tentamos entregar (evita loop infinito no check_payment)
+    order.delivery_attempted = True
+
     if all_success:
         order.delivered = True
         order.delivered_at = datetime.utcnow()
