@@ -7,14 +7,42 @@
 // e a API do Roblox, evitando bloqueio de IP.
 // - Sigue redirects automaticamente (301, 302, 307, 308)
 // - Descomprime respostas gzip/deflate automaticamente
+// - Resolve DNS manualmente usando servidores públicos (evita DNS bloqueado)
 // ===================================================================
 
 const http = require('http');
 const https = require('https');
+const tls = require('tls');
 const zlib = require('zlib');
+const dns = require('dns');
 
 const PORT = process.env.PROXY_PORT || 3999;
 const MAX_REDIRECTS = 5;
+
+// Resolver DNS manual usando servidores públicos
+const DNS_SERVERS = ['8.8.8.8', '1.1.1.1', '208.67.222.222'];
+
+function resolveHost(hostname) {
+    return new Promise((resolve, reject) => {
+        // Tenta resolver usando os servidores públicos
+        const resolver = new dns.Resolver();
+        resolver.setServers(DNS_SERVERS);
+        resolver.resolve4(hostname, (err, addresses) => {
+            if (err || !addresses || addresses.length === 0) {
+                // Fallback: tenta o resolver padrão
+                dns.resolve4(hostname, (err2, addrs) => {
+                    if (err2 || !addrs || addrs.length === 0) {
+                        console.error(`[DNS] Falha ao resolver ${hostname}: ${err2 || err}`);
+                        return reject(new Error(`DNS resolve failed for ${hostname}`));
+                    }
+                    resolve(addrs[0]);
+                });
+            } else {
+                resolve(addresses[0]);
+            }
+        });
+    });
+}
 
 const BASE_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -101,32 +129,66 @@ function decompressData(data, contentEncoding) {
 }
 
 /**
+ * Cache de DNS para evitar resoluções repetidas
+ */
+const dnsCache = new Map();
+const DNS_TTL = 60000; // 60 segundos
+
+async function getCachedDNS(hostname) {
+    const cached = dnsCache.get(hostname);
+    if (cached && (Date.now() - cached.time) < DNS_TTL) {
+        return cached.ip;
+    }
+    const ip = await resolveHost(hostname);
+    dnsCache.set(hostname, { ip, time: Date.now() });
+    return ip;
+}
+
+/**
  * Faz uma requisição HTTP seguindo redirects automaticamente.
+ * Usa resolução DNS manual para evitar bloqueio de DNS do servidor.
  * Retorna { data (string descomprimida), status, headers, elapsed }.
  */
-function makeRequest(options, body, redirectCount = 0) {
+async function makeRequest(options, body, redirectCount = 0) {
+    const isHttps = options.protocol === 'https:';
+    const lib = isHttps ? https : http;
+
+    // Resolver DNS manualmente e usar IP diretamente
+    let hostname = options.hostname;
+    let ip = hostname;
+    try {
+        ip = await getCachedDNS(hostname);
+    } catch (e) {
+        console.error(`[PROXY] DNS falhou para ${hostname}: ${e.message}`);
+        // Se falhar, tenta com o hostname normalmente (pode funcionar se o SO resolver)
+    }
+
+    const reqOptions = {
+        hostname: ip,                   // Usa IP resolvido
+        port: options.port || (isHttps ? 443 : 80),
+        path: options.path || '/',
+        method: options.method || 'GET',
+        headers: { ...options.headers, host: hostname }, // Host header com hostname original
+        timeout: options.timeout || 30000,
+        servername: hostname,           // SNI para TLS
+    };
+
+    const bodyStr = body ? JSON.stringify(body) : null;
+    if (bodyStr && ['POST', 'PUT', 'PATCH'].includes(reqOptions.method)) {
+        reqOptions.headers['Content-Length'] = Buffer.byteLength(bodyStr);
+    } else if (reqOptions.method !== 'GET') {
+        reqOptions.headers['Content-Length'] = 0;
+    }
+
+    // Para HTTPS com IP direto, precisa desabilitar verificação de hostname
+    if (isHttps) {
+        reqOptions.rejectUnauthorized = false;
+        reqOptions.checkServerIdentity = () => undefined;
+    }
+
+    const startTime = Date.now();
+
     return new Promise((resolve, reject) => {
-        const isHttps = options.protocol === 'https:';
-        const lib = isHttps ? https : http;
-
-        const reqOptions = {
-            hostname: options.hostname,
-            port: options.port || (isHttps ? 443 : 80),
-            path: options.path || '/',
-            method: options.method || 'GET',
-            headers: options.headers || {},
-            timeout: options.timeout || 30000,
-        };
-
-        const bodyStr = body ? JSON.stringify(body) : null;
-        if (bodyStr && ['POST', 'PUT', 'PATCH'].includes(reqOptions.method)) {
-            reqOptions.headers['Content-Length'] = Buffer.byteLength(bodyStr);
-        } else if (reqOptions.method !== 'GET') {
-            reqOptions.headers['Content-Length'] = 0;
-        }
-
-        const startTime = Date.now();
-
         const req = lib.request(reqOptions, (res) => {
             const chunks = [];
             res.on('data', chunk => { chunks.push(chunk); });
@@ -202,6 +264,16 @@ function makeRequest(options, body, redirectCount = 0) {
         req.end();
     });
 }
+
+// Teste DNS na inicialização
+(async () => {
+    try {
+        const ip = await resolveHost('api.roblox.com');
+        console.log(`✅ DNS funcionando: api.roblox.com → ${ip}`);
+    } catch (e) {
+        console.error(`⚠️  DNS pode não funcionar: ${e.message}`);
+    }
+})();
 
 const server = http.createServer(async (req, res) => {
     // Health check

@@ -415,30 +415,40 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
 
         _log(f'[ROBLOX PROXY] {method} {endpoint} → status={status}, error={error}', 'debug')
 
-        if error:
-            _log(f"[ROBLOX PROXY] ❌ {error}", 'error')
-            return None, error
+        # Verifica se o proxy retornou erro de rede (DNS falhou no proxy Node.js)
+        proxy_network_error = False
+        if status == 500 and isinstance(data, dict):
+            error_msg = str(data.get('message', '')) + str(data.get('error', ''))
+            if 'ENOTFOUND' in error_msg or 'getaddrinfo' in error_msg or 'ECONNREFUSED' in error_msg:
+                proxy_network_error = True
+                _log(f"[ROBLOX PROXY] Proxy retornou erro de rede DNS, tentando conexão direta...", 'warning')
 
-        if status == 200:
-            if isinstance(data, dict):
+        if error and not proxy_network_error:
+            # Erro de conexão com o proxy (timeout, etc) — tentar direto
+            _log(f"[ROBLOX PROXY] ❌ Erro de conexão com proxy: {error}", 'warning')
+            _log(f"[ROBLOX PROXY] Tentando conexão direta como fallback...", 'info')
+        elif not proxy_network_error:
+            # Sem erro de rede — processar resposta normalmente
+            if status == 200:
+                if isinstance(data, dict):
+                    return data, None
                 return data, None
-            return data, None
-        elif status == 403:
-            _log(f"[ROBLOX PROXY] 403 - IP bloqueado ou cookie inválido", 'warning')
-            return None, "Bloqueio de IP pelo Roblox (403). Verifique o proxy."
-        elif status == 401:
-            return None, "Não autorizado (401) — cookie expirado"
-        elif status == 429:
-            return None, "Rate limit (429)"
-        elif status == 422:
-            if isinstance(data, dict):
-                errors = data.get('errors', [{}])
-                msg = errors[0].get('message', str(data)) if errors else str(data)
+            elif status == 403:
+                _log(f"[ROBLOX PROXY] 403 - IP bloqueado ou cookie inválido", 'warning')
+                return None, "Bloqueio de IP pelo Roblox (403). Verifique o proxy."
+            elif status == 401:
+                return None, "Não autorizado (401) — cookie expirado"
+            elif status == 429:
+                return None, "Rate limit (429)"
+            elif status == 422:
+                if isinstance(data, dict):
+                    errors = data.get('errors', [{}])
+                    msg = errors[0].get('message', str(data)) if errors else str(data)
+                else:
+                    msg = str(data)[:200]
+                return None, f"Erro validação (422): {msg}"
             else:
-                msg = str(data)[:200]
-            return None, f"Erro validação (422): {msg}"
-        else:
-            return None, f"HTTP {status}: {str(data)[:300] if data else 'sem resposta'}"
+                return None, f"HTTP {status}: {str(data)[:300] if data else 'sem resposta'}"
 
     # === SEM PROXY - conexão direta ===
     if session is None:
@@ -454,6 +464,10 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
         urls = [
             f"https://api.roblox.com{endpoint}",
             f"https://catalog.roblox.com{endpoint}",
+        ]
+    elif endpoint.startswith('/marketplace/'):
+        urls = [
+            f"https://www.roblox.com{endpoint}",
         ]
     else:
         urls = [f"https://api.roblox.com{endpoint}"]
