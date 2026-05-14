@@ -368,11 +368,17 @@ def _proxy_request(method, endpoint, headers=None, body=None, timeout=30):
         'domain': domain,
     }
 
+    # Prepara headers HTTP - inclui cookie no header para Cloudflare Worker
+    proxy_headers = {'Content-Type': 'application/json'}
+    if headers and 'Cookie' in headers:
+        cookie_val = headers['Cookie'].replace('.ROBLOSECURITY=', '')
+        proxy_headers['x-roblox-cookie'] = cookie_val
+
     try:
         resp = requests.post(
             proxy_url,
             json=payload,
-            headers={'Content-Type': 'application/json'},
+            headers=proxy_headers,
             timeout=timeout + 10,  # Timeout um pouco maior para incluir overhead do proxy
         )
         # Tenta retornar como JSON
@@ -417,6 +423,7 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
 
         # Verifica se o proxy retornou erro de rede (DNS falhou no proxy Node.js)
         proxy_network_error = False
+        proxy_ip_banned = False
         if status == 500 and isinstance(data, dict):
             error_msg = str(data.get('message', '')) + str(data.get('error', ''))
             if 'ENOTFOUND' in error_msg or 'getaddrinfo' in error_msg or 'ECONNREFUSED' in error_msg:
@@ -427,15 +434,16 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
             # Erro de conexão com o proxy (timeout, etc) — tentar direto
             _log(f"[ROBLOX PROXY] ❌ Erro de conexão com proxy: {error}", 'warning')
             _log(f"[ROBLOX PROXY] Tentando conexão direta como fallback...", 'info')
-        elif not proxy_network_error:
+        elif status == 403 and not proxy_network_error:
+            # IP banido pelo Roblox via proxy — tentar conexão direta
+            _log(f"[ROBLOX PROXY] 403 - IP possivelmente banido, tentando conexão direta...", 'warning')
+            proxy_ip_banned = True
+        elif not proxy_network_error and not proxy_ip_banned:
             # Sem erro de rede — processar resposta normalmente
             if status == 200:
                 if isinstance(data, dict):
                     return data, None
                 return data, None
-            elif status == 403:
-                _log(f"[ROBLOX PROXY] 403 - IP bloqueado ou cookie inválido", 'warning')
-                return None, "Bloqueio de IP pelo Roblox (403). Verifique o proxy."
             elif status == 401:
                 return None, "Não autorizado (401) — cookie expirado"
             elif status == 429:
