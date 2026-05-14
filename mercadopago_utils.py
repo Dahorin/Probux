@@ -666,29 +666,43 @@ def verify_roblox_cookie(cookie=None):
 
 def get_balancer_status():
     """Testa rapidamente se a conexão com Roblox está funcionando.
-    Retorna list de resultados por endpoint."""
+    Retorna list de resultados por endpoint.
+    Usa _roblox_api_request para respeitar proxy/fallback."""
     results = []
     cookie = ROBLOX_COOKIE
     if not cookie:
         return [{'endpoint': 'N/A', 'status': 'erro', 'message': 'Cookie não configurado'}]
 
+    # Cria session para uso direto (fallback interno de _roblox_api_request)
     session = _create_session(cookie)
     _get_xsrf_token(session)
 
+    # Endpoints como (nome, método, path) — _roblox_api_request monta a URL
     endpoints = [
-        ('Usuário Autenticado', 'GET', 'https://users.roblox.com/v1/users/authenticated'),
-        ('Saldo Economy v1', 'GET', 'https://economy.roblox.com/v1/user/currency'),
-        ('Catalog Items', 'POST', 'https://catalog.roblox.com/v1/catalog/items/details'),
+        ('Usuário Autenticado', 'GET', '/v1/users/authenticated', 'api.roblox.com'),
+        ('Saldo Economy v1', 'GET', '/v1/user/currency', 'economy.roblox.com'),
+        ('Catalog Items', 'POST', '/v1/catalog/items/details', 'catalog.roblox.com'),
     ]
 
-    for name, method, url in endpoints:
-        result = _test_endpoint(session, method, url, json_data={'items': [{'id': 1, 'itemType': 'GamePass'}]} if 'items' in url else None)
-        if 'error' in result:
-            results.append({'endpoint': name, 'status': 'erro', 'message': result['error']})
-        elif result.get('status_code') == 200:
-            results.append({'endpoint': name, 'status': 'ok', 'message': f"HTTP {result['status_code']}", 'data': result.get('body_preview', '')[:200]})
+    for name, method, endpoint, domain_hint in endpoints:
+        data, err = _roblox_api_request(
+            method, endpoint,
+            session=session,
+            json_data={'items': [{'id': 1, 'itemType': 'GamePass'}]} if 'items' in endpoint else None,
+            max_retries=1,
+            use_auth=True,
+        )
+        if err:
+            results.append({'endpoint': name, 'status': 'erro', 'message': err})
+        elif data is not None:
+            results.append({
+                'endpoint': name,
+                'status': 'ok',
+                'message': 'HTTP 200',
+                'data': str(data)[:200] if not isinstance(data, str) else data[:200],
+            })
         else:
-            results.append({'endpoint': name, 'status': 'erro', 'message': f"HTTP {result.get('status_code', '?')}: {result.get('body_preview', '')[:150]}"})
+            results.append({'endpoint': name, 'status': 'erro', 'message': 'Resposta nula'})
 
     return results
 def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, max_retries=3):
