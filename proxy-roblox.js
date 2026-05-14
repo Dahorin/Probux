@@ -1,45 +1,67 @@
 // ===================================================================
-// PROXY SERVER PARA API DO ROBLOX
+// PROXY SERVER PARA API DO ROBLOX (usando DNS manual)
 //
 // Executar: node proxy-roblox.js
 //
 // Este servidor atua como intermediário entre o Probux (Python/Flask)
 // e a API do Roblox, evitando bloqueio de IP.
-// - Sigue redirects automaticamente (301, 302, 307, 308)
+// - Usa DNS público (8.8.8.8, 1.1.1.1) para resolver hostnames
 // - Descomprime respostas gzip/deflate automaticamente
-// - Resolve DNS manualmente usando servidores públicos (evita DNS bloqueado)
+// - IMPORTANTE: Se o próprio servidor não consegue resolver DNS,
+//   use um Cloudflare Worker em vez deste proxy local.
 // ===================================================================
 
 const http = require('http');
 const https = require('https');
-const tls = require('tls');
 const zlib = require('zlib');
 const dns = require('dns');
 
 const PORT = process.env.PROXY_PORT || 3999;
 const MAX_REDIRECTS = 5;
 
-// Resolver DNS manual usando servidores públicos
+// DNS público como fallback
 const DNS_SERVERS = ['8.8.8.8', '1.1.1.1', '208.67.222.222'];
 
+// Cache de DNS
+const dnsCache = new Map();
+const DNS_TTL = 120000; // 2 minutos
+
+/**
+ * Resolve hostname usando servidores DNS públicos.
+ * Fallback para resolução do sistema se os servidores públicos falharem.
+ */
 function resolveHost(hostname) {
     return new Promise((resolve, reject) => {
-        // Tenta resolver usando os servidores públicos
+        // Verifica cache primeiro
+        const cached = dnsCache.get(hostname);
+        if (cached && (Date.now() - cached.time) < DNS_TTL) {
+            return resolve(cached.ip);
+        }
+
+        // Tenta com resolvedor customizado (DNS público)
         const resolver = new dns.Resolver();
         resolver.setServers(DNS_SERVERS);
+
         resolver.resolve4(hostname, (err, addresses) => {
-            if (err || !addresses || addresses.length === 0) {
-                // Fallback: tenta o resolver padrão
-                dns.resolve4(hostname, (err2, addrs) => {
-                    if (err2 || !addrs || addrs.length === 0) {
-                        console.error(`[DNS] Falha ao resolver ${hostname}: ${err2 || err}`);
-                        return reject(new Error(`DNS resolve failed for ${hostname}`));
-                    }
-                    resolve(addrs[0]);
-                });
-            } else {
-                resolve(addresses[0]);
+            if (!err && addresses && addresses.length > 0) {
+                const ip = addresses[0];
+                dnsCache.set(hostname, { ip, time: Date.now() });
+                console.log(`[DNS] ${hostname} → ${ip}`);
+                return resolve(ip);
             }
+
+            // Fallback: tenta o resolvedor do sistema
+            dns.resolve4(hostname, (err2, addrs) => {
+                if (!err2 && addrs && addrs.length > 0) {
+                    const ip = addrs[0];
+                    dnsCache.set(hostname, { ip, time: Date.now() });
+                    console.log(`[DNS] ${hostname} → ${ip} (sistema)`);
+                    return resolve(ip);
+                }
+
+                console.error(`[DNS] Falhou para ${hostname}: ${err2 || err}`);
+                reject(new Error(`DNS resolution failed for ${hostname}`));
+            });
         });
     });
 }
@@ -68,122 +90,82 @@ function parseBody(req) {
 
 /**
  * Decomprime resposta gzip/deflate.
- * Retorna a string descomprimida ou os bytes brutos se não for comprimido.
  */
 function decompressData(data, contentEncoding) {
     if (!data || data.length === 0) return data;
 
-    // Se já é string (não comprimido), retornar direto
     if (typeof data === 'string') {
-        // Verifica se parece binary garbage
         for (let i = 0; i < Math.min(data.length, 100); i++) {
             const c = data.charCodeAt(i);
             if (c < 9 || (c > 13 && c < 32 && !'\t\n\r'.includes(data[i]))) {
-                // Provavelmente binary - tentar descomprimir
                 try {
-                    const buf = Buffer.from(data, 'binary');
-                    const decompressed = zlib.gunzipSync(buf);
-                    return decompressed.toString('utf-8');
+                    return zlib.gunzipSync(Buffer.from(data, 'binary')).toString('utf-8');
                 } catch (e) {
                     try {
-                        const decompressed = zlib.inflateRawSync(buf);
-                        return decompressed.toString('utf-8');
+                        return zlib.inflateRawSync(Buffer.from(data, 'binary')).toString('utf-8');
                     } catch (e2) {
-                        return data; // Não conseguimos descomprimir
+                        return data;
                     }
                 }
             }
         }
-        return data; // Parece ser texto legível
+        return data;
     }
 
-    // Buffer - tentar descomprimir baseado no Content-Encoding
     try {
-        if (contentEncoding && contentEncoding.includes('gzip')) {
-            return zlib.gunzipSync(data).toString('utf-8');
-        }
-        if (contentEncoding && contentEncoding.includes('deflate')) {
-            return zlib.inflateSync(data).toString('utf-8');
-        }
-        if (contentEncoding && contentEncoding.includes('br')) {
-            return zlib.brotliDecompressSync(data).toString('utf-8');
-        }
-    } catch (e) {
-        // Ignorar erro de descompressão
-    }
+        if (contentEncoding && contentEncoding.includes('gzip')) return zlib.gunzipSync(data).toString('utf-8');
+        if (contentEncoding && contentEncoding.includes('deflate')) return zlib.inflateSync(data).toString('utf-8');
+        if (contentEncoding && contentEncoding.includes('br')) return zlib.brotliDecompressSync(data).toString('utf-8');
+    } catch (e) {}
 
-    // Tentar descomprimir como fallback
-    try {
-        return zlib.gunzipSync(data).toString('utf-8');
-    } catch (e) {
-        try {
-            return zlib.inflateSync(data).toString('utf-8');
-        } catch (e2) {
-            try {
-                return data.toString('utf-8');
-            } catch (e3) {
-                return data.toString('latin1');
-            }
-        }
-    }
-}
-
-/**
- * Cache de DNS para evitar resoluções repetidas
- */
-const dnsCache = new Map();
-const DNS_TTL = 60000; // 60 segundos
-
-async function getCachedDNS(hostname) {
-    const cached = dnsCache.get(hostname);
-    if (cached && (Date.now() - cached.time) < DNS_TTL) {
-        return cached.ip;
-    }
-    const ip = await resolveHost(hostname);
-    dnsCache.set(hostname, { ip, time: Date.now() });
-    return ip;
+    try { return zlib.gunzipSync(data).toString('utf-8'); } catch (e) {}
+    try { return zlib.inflateSync(data).toString('utf-8'); } catch (e) {}
+    try { return data.toString('utf-8'); } catch (e) {}
+    return data.toString('latin1');
 }
 
 /**
  * Faz uma requisição HTTP seguindo redirects automaticamente.
- * Usa resolução DNS manual para evitar bloqueio de DNS do servidor.
- * Retorna { data (string descomprimida), status, headers, elapsed }.
+ * Usa resolução DNS manual para contornar bloqueios de DNS do servidor.
  */
 async function makeRequest(options, body, redirectCount = 0) {
     const isHttps = options.protocol === 'https:';
     const lib = isHttps ? https : http;
 
-    // Resolver DNS manualmente e usar IP diretamente
     let hostname = options.hostname;
     let ip = hostname;
+    let dnsResolved = false;
+
     try {
-        ip = await getCachedDNS(hostname);
+        ip = await resolveHost(hostname);
+        dnsResolved = true;
     } catch (e) {
         console.error(`[PROXY] DNS falhou para ${hostname}: ${e.message}`);
-        // Se falhar, tenta com o hostname normalmente (pode funcionar se o SO resolver)
     }
 
+    const hostHeader = hostname; // Envia Host header com hostname original
+    const hostnameForRequest = dnsResolved ? ip : hostname;
+
     const reqOptions = {
-        hostname: ip,                   // Usa IP resolvido
+        hostname: hostnameForRequest,
         port: options.port || (isHttps ? 443 : 80),
         path: options.path || '/',
         method: options.method || 'GET',
-        headers: { ...options.headers, host: hostname }, // Host header com hostname original
+        headers: { ...options.headers, host: hostHeader },
         timeout: options.timeout || 30000,
-        servername: hostname,           // SNI para TLS
     };
+
+    // Para HTTPS com IP direto, desabilita verificação de hostname
+    if (isHttps && dnsResolved) {
+        reqOptions.rejectUnauthorized = false;
+        reqOptions.checkServerIdentity = () => undefined;
+    }
 
     const bodyStr = body ? JSON.stringify(body) : null;
     if (bodyStr && ['POST', 'PUT', 'PATCH'].includes(reqOptions.method)) {
         reqOptions.headers['Content-Length'] = Buffer.byteLength(bodyStr);
     } else if (reqOptions.method !== 'GET') {
         reqOptions.headers['Content-Length'] = 0;
-    }
-
-    // Para HTTPS com IP direto, precisa desabilitar verificação de hostname
-    if (isHttps) {
-        reqOptions.rejectUnauthorized = false;
-        reqOptions.checkServerIdentity = () => undefined;
     }
 
     const startTime = Date.now();
@@ -196,29 +178,23 @@ async function makeRequest(options, body, redirectCount = 0) {
                 const elapsed = Date.now() - startTime;
                 const status = res.statusCode;
                 const rawData = Buffer.concat(chunks);
-
-                // Descomprime a resposta
                 let data = decompressData(rawData, res.headers['content-encoding']);
 
-                // Seguir redirect se aplicável
                 if ([301, 302, 307, 308].includes(status) && redirectCount < MAX_REDIRECTS) {
                     const location = res.headers.location;
                     if (!location) {
                         resolve({ data, status, headers: res.headers, elapsed });
                         return;
                     }
-
                     try {
                         const redirectUrl = new URL(location);
                         const newIsHttps = redirectUrl.protocol === 'https:';
-
                         let newMethod = options.method;
                         let newBody = body;
                         if ([301, 302, 303].includes(status) && options.method === 'POST') {
                             newMethod = 'GET';
                             newBody = null;
                         }
-
                         const newOptions = {
                             ...options,
                             protocol: redirectUrl.protocol,
@@ -227,40 +203,29 @@ async function makeRequest(options, body, redirectCount = 0) {
                             path: redirectUrl.pathname + redirectUrl.search,
                             method: newMethod,
                         };
-
                         newOptions.headers = { ...options.headers };
                         newOptions.headers['host'] = redirectUrl.host;
                         if (newMethod === 'GET') {
                             delete newOptions.headers['content-length'];
                             delete newOptions.headers['content-type'];
                         }
-
-                        console.log(`[PROXY] 🔄 Redirect ${status} (${redirectCount + 1}/${MAX_REDIRECTS}): ${options.hostname}${options.path} → ${location}`);
-
-                        makeRequest(newOptions, newBody, redirectCount + 1)
-                            .then(resolve)
-                            .catch(reject);
+                        console.log(`[PROXY] 🔄 Redirect ${status} (${redirectCount + 1}/${MAX_REDIRECTS}): ${hostname}${options.path} → ${location}`);
+                        makeRequest(newOptions, newBody, redirectCount + 1).then(resolve).catch(reject);
                     } catch (e) {
-                        console.error(`[PROXY] Redirect parse error: ${e.message}`);
                         resolve({ data, status, headers: res.headers, elapsed, redirectError: e.message });
                     }
                     return;
                 }
-
                 resolve({ data, status, headers: res.headers, elapsed });
             });
         });
 
         req.on('error', err => reject(err));
-        req.on('timeout', () => {
-            req.destroy();
-            reject(new Error('Request timeout'));
-        });
+        req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
 
         if (bodyStr && ['POST', 'PUT', 'PATCH'].includes(reqOptions.method)) {
             req.write(bodyStr);
         }
-
         req.end();
     });
 }
@@ -271,12 +236,12 @@ async function makeRequest(options, body, redirectCount = 0) {
         const ip = await resolveHost('api.roblox.com');
         console.log(`✅ DNS funcionando: api.roblox.com → ${ip}`);
     } catch (e) {
-        console.error(`⚠️  DNS pode não funcionar: ${e.message}`);
+        console.error(`⚠️  DNS NÃO funciona para api.roblox.com: ${e.message}`);
+        console.error(`   Use Cloudflare Worker como alternativa. Veja proxy-cloudflare.js`);
     }
 })();
 
 const server = http.createServer(async (req, res) => {
-    // Health check
     if (req.url === '/health' || req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', message: 'Proxy Roblox ativo', uptime: process.uptime() }));
@@ -298,7 +263,6 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            // Resolve domínio e URL completa
             const domain = body.domain || 'api.roblox.com';
             const targetUrl = targetPath.startsWith('http')
                 ? targetPath
@@ -307,16 +271,13 @@ const server = http.createServer(async (req, res) => {
             const parsedUrl = new URL(targetUrl);
             const isHttps = parsedUrl.protocol === 'https:';
 
-            // Monta headers
             const finalHeaders = { ...BASE_HEADERS, ...extraHeaders };
 
-            // Cookie do Roblox
             const cookie = req.headers['x-roblox-cookie'] || req.headers['cookie'];
             if (cookie) {
                 finalHeaders['Cookie'] = `.ROBLOSECURITY=${cookie}`;
             }
 
-            // Content-Type para POST
             if (['POST', 'PUT', 'PATCH'].includes(method)) {
                 finalHeaders['Content-Type'] = 'application/json; charset=UTF-8';
             }
@@ -337,7 +298,6 @@ const server = http.createServer(async (req, res) => {
 
             const result = await makeRequest(options, requestBody);
 
-            // Headers de resposta - NÃO repassar Content-Encoding pois já descomprimimos
             res.setHeader('X-Proxy-Status', 'ok');
             res.setHeader('X-Roblox-Status', String(result.status));
             res.setHeader('X-Roblox-Elapsed', result.elapsed + 'ms');
@@ -360,7 +320,6 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 404
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
 });
@@ -370,6 +329,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('  🔀 Proxy Roblox rodando na porta ' + PORT);
     console.log('  Endpoint: POST http://localhost:' + PORT + '/proxy');
     console.log('  Health:   GET  http://localhost:' + PORT + '/health');
-    console.log('  Exemplo: POST { "method": "GET", "url": "/v1/users/authenticated", "domain": "users.roblox.com" }');
     console.log('========================================');
 });

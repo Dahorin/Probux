@@ -703,15 +703,9 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
     gamepass_id = match.group(1)
     _log(f"[GAMEPASS] 🎮 Comprando gamepass {gamepass_id} (proxy={'ON' if USE_PROXY else 'OFF'})", 'info')
 
-    # Verifica se o cookie é válido antes de tentar comprar
-    is_valid, error = verify_roblox_cookie(roblox_cookie)
-    if not is_valid:
-        _log(f"[GAMEPASS] ❌ Cookie inválido: {error}", 'error')
-        return (False, f"Cookie inválido: {error}")
-
     session = _create_session(roblox_cookie)
 
-    # Verifica preço via catálogo
+    # Verifica preço via catálogo (apenas se expected_price informado)
     if expected_price:
         data, err = _roblox_api_request(
             'POST', '/v1/catalog/items/details',
@@ -719,46 +713,54 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
             json_data={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]},
             max_retries=1
         )
-        if data and 'data' in data:
+        if data and isinstance(data, dict) and 'data' in data:
             items = data['data']
-            if items:
+            if items and isinstance(items, list) and len(items) > 0:
                 actual_price = items[0].get('price') or items[0].get('priceInRobux')
                 _log(f"[GAMEPASS] Preço real: {actual_price} Robux", 'debug')
                 if actual_price and int(actual_price) != int(expected_price):
                     _log(f"[GAMEPASS] ⚠️ Preço diferente: esperado {expected_price}, real {actual_price}", 'warning')
 
-    # Tenta a compra — endpoint principal
-    _log(f"[GAMEPASS] Tentando compra via /v1/purchases/game-pass/{gamepass_id}...", 'info')
-    data, err = _roblox_api_request(
-        'POST', f'/v1/purchases/game-pass/{gamepass_id}',
-        session=session,
-        json_data={'expectedPrice': int(expected_price) if expected_price else 1},
-        max_retries=max_retries
-    )
+    # ============================================
+    # TENTATIVA DE COMPRA — múltiplos endpoints
+    # ============================================
+    endpoints_compra = [
+        ('/v1/purchases/game-pass/{id}', 'api.roblox.com'),
+        ('/v1/purchases/game-pass/{id}', 'catalog.roblox.com'),
+        ('/marketplace/game-pass/{id}', 'www.roblox.com'),
+    ]
 
-    if data and isinstance(data, dict) and data.get('success'):
-        _log(f"[GAMEPASS] ✅ COMPRA SUCEDIDA! Gamepass {gamepass_id}", 'info')
-        return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
-    elif data and isinstance(data, dict):
-        error_msg = data.get('error', data.get('errorMessage', 'Erro desconhecido'))
-        _log(f"[GAMEPASS] ❌ API erro: {error_msg}", 'error')
+    ultimo_erro = None
 
-        # Fallback: tenta via endpoint alternativo
-        _log(f"[GAMEPASS] Tentando endpoint alternativo /marketplace/game-pass/{gamepass_id}...", 'info')
-        data2, err2 = _roblox_api_request(
-            'POST', f'/marketplace/game-pass/{gamepass_id}',
+    for endpoint_tpl, domain in endpoints_compra:
+        endpoint = endpoint_tpl.replace('{id}', str(gamepass_id))
+        _log(f"[GAMEPASS] Tentando compra via {domain}{endpoint}...", 'info')
+
+        data, err = _roblox_api_request(
+            'POST', endpoint,
             session=session,
             json_data={'expectedPrice': int(expected_price) if expected_price else 1},
-            max_retries=2
+            max_retries=2,
         )
-        if data2 and isinstance(data2, dict) and data2.get('success'):
-            _log(f"[GAMEPASS] ✅ COMPRA SUCEDIDA (fallback)! Gamepass {gamepass_id}", 'info')
-            return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
 
-        return (False, f"API erro: {error_msg}")
-    else:
-        _log(f"[GAMEPASS] ❌ Falha: {err}", 'error')
-        return (False, err)
+        if data and isinstance(data, dict) and data.get('success'):
+            _log(f"[GAMEPASS] ✅ COMPRA SUCEDIDA via {domain}! Gamepass {gamepass_id}", 'info')
+            return (True, f"Gamepass {gamepass_id} comprada com sucesso via {domain}!")
+
+        if err:
+            ultimo_erro = err
+            _log(f"[GAMEPASS] ❌ Falha via {domain}: {err}", 'warning')
+            # Se o erro for 403 (banido), tentar próximo endpoint
+            if '403' in str(err) or 'banido' in str(err).lower():
+                continue
+            # Se for erro de rede sem proxy, próximo endpoint pode funcionar
+            if 'ENOTFOUND' in str(err) or 'getaddrinfo' in str(err):
+                continue
+
+    # Nenhum endpoint funcionou
+    msg_erro = ultimo_erro or "Todos os endpoints de compra falharam"
+    _log(f"[GAMEPASS] ❌ FALHA em todos os endpoints: {msg_erro}", 'error')
+    return (False, msg_erro)
 
 
 # ===================================================================
