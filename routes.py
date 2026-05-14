@@ -175,7 +175,9 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent=0):
         # Tenta obter XSRF token
         mercadopago_utils._get_xsrf_token(session)
 
-        # Try catalog API (endpoint principal)
+        # =============================================
+        # Método 1: Catalog API (endpoint principal)
+        # =============================================
         try:
             resp, err = mercadopago_utils._roblox_api_request(
                 'POST', '/v1/catalog/items/details',
@@ -183,20 +185,48 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent=0):
                 json_data={'items': [{'id': int(gamepass_id), 'itemType': 'GamePass'}]},
                 max_retries=2
             )
-            if resp and 'data' in resp:
-                items = resp['data']
-                if items:
-                    price = items[0].get('price') or items[0].get('priceInRobux')
-                    if price is not None:
-                        if discount_percent > 0:
-                            original = round(price / (1 - discount_percent))
-                            _log(f'[ROBLOX] Price returned: {price}, Original adjusted: {original}')
-                            return int(original), False, None, None
-                        return int(price), False, None, None
+            mercadopago_utils._log(f'[ROBLOX] Catalog API raw response: {str(resp)[:500]}')
+            if resp and isinstance(resp, dict):
+                # Tenta formato padrão: data[0].price
+                if 'data' in resp:
+                    items = resp['data']
+                    if items and isinstance(items, list) and len(items) > 0:
+                        item = items[0] if isinstance(items[0], dict) else {}
+                        mercadopago_utils._log(f'[ROBLOX] Catalog item keys: {list(item.keys())}')
+                        # Tenta todos os campos possíveis de preço
+                        price = (item.get('price') or item.get('priceInRobux') or
+                                 item.get('currentPrice') or item.get('originalPrice') or
+                                 item.get('priceRobux') or item.get('robuxPrice') or
+                                 item.get('cost') or item.get('amount'))
+                        if price is not None:
+                            if discount_percent > 0:
+                                original = round(price / (1 - discount_percent))
+                                mercadopago_utils._log(f'[ROBLOX] Price returned: {price}, Original adjusted: {original}')
+                                return int(original), False, None, None
+                            return int(price), False, None, None
+                # Tenta formato alternativo: data.Product.price
+                if 'data' in resp and isinstance(resp['data'], dict):
+                    product = resp['data'].get('product') or resp['data'].get('item')
+                    if product and isinstance(product, dict):
+                        price = product.get('price') or product.get('priceInRobux') or product.get('currentPrice')
+                        if price is not None:
+                            if discount_percent > 0:
+                                original = round(price / (1 - discount_percent))
+                                return int(original), False, None, None
+                            return int(price), False, None, None
+                # Tenta formato direto no root
+                price = resp.get('price') or resp.get('priceInRobux') or resp.get('currentPrice')
+                if price is not None:
+                    if discount_percent > 0:
+                        original = round(price / (1 - discount_percent))
+                        return int(original), False, None, None
+                    return int(price), False, None, None
         except Exception as e:
-            _log(f'[ROBLOX] Catalog error: {e}')
+            mercadopago_utils._log(f'[ROBLOX] Catalog API error: {e}')
 
-        # Fallback: HTML - search for data-expected-price="NUMBER"
+        # =============================================
+        # Método 2: HTML - search for various price patterns
+        # =============================================
         try:
             resp_html, err = mercadopago_utils._roblox_api_request(
                 'GET', gamepass_link,
@@ -205,38 +235,174 @@ def get_roblox_gamepass_price(gamepass_link, roblox_cookie, discount_percent=0):
             )
             if resp_html and isinstance(resp_html, str):
                 html = resp_html
+                mercadopago_utils._log(f'[ROBLOX] HTML response length: {len(html)} chars')
+                mercadopago_utils._log(f'[ROBLOX] HTML first 2000 chars: {html[:2000]}')
 
                 if 'already own' in html.lower() or 'você possui' in html.lower():
                     return None, True, None, "You already own this item!"
 
-                # Search for data-expected-price="NUMBER"
-                m = re.search(r'data-expected-price="(\d+)"', html)
-                if m:
-                    price = int(m.group(1))
-                    if discount_percent > 0:
-                        original = round(price / (1 - discount_percent))
-                        _log(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
-                        return int(original), False, None, None
-                    return price, False, None, None
+                # Tenta extrair JSON embutido em __NEXT_DATA__ (React SSR)
+                next_data_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+                if next_data_match:
+                    try:
+                        import json
+                        next_data = json.loads(next_data_match.group(1))
+                        mercadopago_utils._log(f'[ROBLOX] __NEXT_DATA__ found, searching for price...')
+                        # Procura recursivamente por campos de preço
+                        def find_price(obj, depth=0):
+                            if depth > 10:
+                                return None
+                            if isinstance(obj, dict):
+                                for k in ['price', 'priceInRobux', 'expectedPrice', 'priceValue', 'amount', 'cost']:
+                                    if k in obj and isinstance(obj[k], (int, float)):
+                                        return obj[k]
+                                for v in obj.values():
+                                    p = find_price(v, depth + 1)
+                                    if p is not None:
+                                        return p
+                            elif isinstance(obj, list):
+                                for item in obj:
+                                    p = find_price(item, depth + 1)
+                                    if p is not None:
+                                        return p
+                            return None
 
-                # Alternative patterns
+                        embedded_price = find_price(next_data)
+                        if embedded_price and 0 < embedded_price < 10000000:
+                            mercadopago_utils._log(f'[ROBLOX] Price from __NEXT_DATA__: {embedded_price}')
+                            if discount_percent > 0:
+                                original = round(embedded_price / (1 - discount_percent))
+                                return int(original), False, None, None
+                            return int(embedded_price), False, None, None
+                    except (json.JSONDecodeError, Exception) as e2:
+                        mercadopago_utils._log(f'[ROBLOX] __NEXT_DATA__ parse error: {e2}')
+
+                # Tenta extrair JSON-LD
+                ld_match = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
+                if ld_match:
+                    try:
+                        import json
+                        ld_data = json.loads(ld_match.group(1))
+                        mercadopago_utils._log(f'[ROBLOX] JSON-LD found: {str(ld_data)[:300]}')
+                        if isinstance(ld_data, dict):
+                            price = ld_data.get('price') or ld_data.get('offers', {}).get('price')
+                            if price:
+                                if discount_percent > 0:
+                                    original = round(float(price) / (1 - discount_percent))
+                                    return int(original), False, None, None
+                                return int(float(price)), False, None, None
+                    except (json.JSONDecodeError, Exception):
+                        pass
+
+                # --- Padrões de preço no HTML (ordenados por probabilidade) ---
                 patterns = [
+                    # Formato moderno do Roblox (React/embedded JSON)
                     r'"price"\s*:\s*(\d+)',
                     r'"priceInRobux"\s*:\s*(\d+)',
+                    r'"expectedPrice"\s*:\s*"?(\d+)"?',
+                    r'"priceValue"\s*:\s*"(\d+)"',
+                    r'"amount"\s*:\s*(\d+)',
+                    r'"value"\s*:\s*(\d+)',
+                    r'"robuxAmount"\s*:\s*(\d+)',
+                    # Atributos de dados no HTML
+                    r'data-expected-price="(\d+)"',
                     r'data-price="(\d+)"',
-                    r'(\d+)\s*Robux',
+                    # Formato antigo (texto visível)
+                    r'(\d[\d,.]*)\s*Robux',
+                    r'(\d[\d,.]*)\s*robux',
+                    # Preço embutido em script/JSON-LD
+                    r'"price"\s*:\s*\{[^}]*"@value"\s*:\s*"(\d+)"',
+                    r'"priceCurrency"\s*:\s*"BRL"[^}]*?"price"\s*:\s*"(\d+)"',
+                    # Padrão genérico: número isolado que parece preço (entre 10 e 1000000)
+                    r'itemprop="price"\s+content="(\d+)"',
+                    r'class="[^"]*price[^"]*"[^>]*>(\d[\d,.]*)',
+                    r'>\s*(\d{2,7})\s*<span[^>]*>robux|Robux',
+                    # Pack de preço
+                    r'price-text[^>]*>[\s]*(\d+)',
                 ]
                 for p in patterns:
                     m = re.search(p, html)
                     if m:
-                        price = int(m.group(1))
+                        price_str = m.group(1).replace(',', '.')
+                        try:
+                            price = int(float(price_str))
+                            if price > 0 and price < 10000000:  # Sanity check
+                                if discount_percent > 0:
+                                    original = round(price / (1 - discount_percent))
+                                    mercadopago_utils._log(f'[ROBLOX] Price from HTML pattern "{p}": {price}, Original adjusted: {original}')
+                                    return int(original), False, None, None
+                                mercadopago_utils._log(f'[ROBLOX] Price from HTML pattern "{p}": {price}')
+                                return price, False, None, None
+                        except ValueError:
+                            continue
+
+                # Último recurso: procurar qualquer número grande que pareça preço
+                all_numbers = re.findall(r'(\d{3,8})', html)
+                price_like = [int(n) for n in all_numbers if 50 <= int(n) <= 1000000]
+                if price_like:
+                    mercadopago_utils._log(f'[ROBLOX] Price candidates from HTML: {price_like[:10]}')
+
+        except Exception as e:
+            mercadopago_utils._log(f'[ROBLOX] HTML scrape error: {e}')
+
+        mercadopago_utils._log(f'[ROBLOX] HTML scrape: nenhum preço encontrado na página do gamepass')
+
+        # =============================================
+        # Método 3: Tentar comprar/detalhes via API direta
+        # (Purchase API frequentemente retorna preço no erro 422)
+        # =============================================
+        try:
+            resp_purchase, err_purchase = mercadopago_utils._roblox_api_request(
+                'POST', f'/v1/purchases/game-pass/{gamepass_id}',
+                session=session,
+                json_data={'expectedPrice': 0},
+                max_retries=1
+            )
+            if err_purchase and isinstance(err_purchase, str):
+                # Extrai preço da mensagem de erro (ex: "expected price is 150")
+                price_match = re.search(r'expected\s*(?:price|cost)\s*(?:is|:)?\s*(\d+)', err_purchase, re.IGNORECASE)
+                if price_match:
+                    price = int(price_match.group(1))
+                    if discount_percent > 0:
+                        original = round(price / (1 - discount_percent))
+                        mercadopago_utils._log(f'[ROBLOX] Price from purchase API error: {price}, Original adjusted: {original}')
+                        return int(original), False, None, None
+                    mercadopago_utils._log(f'[ROBLOX] Price from purchase API error: {price}')
+                    return price, False, None, None
+            # Se a resposta é JSON com preço
+            if resp_purchase and isinstance(resp_purchase, dict):
+                price = resp_purchase.get('price') or resp_purchase.get('priceInRobux')
+                if price:
+                    if discount_percent > 0:
+                        original = round(price / (1 - discount_percent))
+                        return int(original), False, None, None
+                    return int(price), False, None, None
+        except Exception as e:
+            mercadopago_utils._log(f'[ROBLOX] Purchase API fallback error: {e}')
+
+        # =============================================
+        # Método 4: Tentar página de compra direta (navegador renderizado)
+        # =============================================
+        try:
+            buy_page_url = f'https://www.roblox.com/game-pass/{gamepass_id}'
+            resp_buy, err_buy = mercadopago_utils._roblox_api_request(
+                'GET', buy_page_url,
+                session=session,
+                max_retries=2
+            )
+            if resp_buy and isinstance(resp_buy, str):
+                # Procurar qualquer número que pareça preço em contextos comuns
+                price_match = re.search(r'(?:price|cost|valor|preço)[^<>:]{0,50}?(\d[\d,.]{0,10})', resp_buy, re.IGNORECASE)
+                if price_match:
+                    price_str = price_match.group(1).replace(',', '.')
+                    price = int(float(price_str))
+                    if 10 <= price < 10000000:
                         if discount_percent > 0:
                             original = round(price / (1 - discount_percent))
-                            _log(f'[ROBLOX] Price from HTML: {price}, Original adjusted: {original}')
                             return int(original), False, None, None
                         return price, False, None, None
         except Exception as e:
-            _log(f'[ROBLOX] HTML error: {e}')
+            mercadopago_utils._log(f'[ROBLOX] Buy page fallback error: {e}')
 
         return None, None, None, "Could not find price."
     except Exception as e:
@@ -658,28 +824,50 @@ def checkout():
         current_user.email
     )
 
+    mercadopago_utils._log(f"[CHECKOUT] mp_payment result: {mp_payment}", 'info')
+
     if mp_payment:
         # Salva os dados do Mercado Pago no pedido
         order.mp_payment_id = str(mp_payment['id'])
-        order.pix_code = mp_payment['qr_code']
-        order.mp_qr_code_base64 = mp_payment['qr_code_base64']
+        order.pix_code = mp_payment.get('qr_code', '')
+        order.mp_qr_code_base64 = mp_payment.get('qr_code_base64', '')
         db.session.commit()
 
-        # QR Code do Mercado Pago (usando base64 ou o código copia/cola)
-        qr_url = None  # O Mercado Pago fornece base64, não URL de imagem
-        pix_code = mp_payment['qr_code']
+        # QR Code do Mercado Pago
+        qr_url = None
+        pix_code = ''
+        pix_base64 = ''
+        pix_url = ''
+        metodo = mp_payment.get('method', '')
+
+        if metodo == 'payment_api':
+            pix_code = mp_payment.get('qr_code', '')
+            pix_base64 = mp_payment.get('qr_code_base64', '')
+            mercadopago_utils._log(f"[CHECKOUT] Pix via payment API! ID: {order.mp_payment_id}, QR len: {len(pix_code)}, Base64 len: {len(pix_base64)}", 'info')
+        elif metodo == 'preference':
+            pix_url = mp_payment.get('init_point', '')
+            sandbox_url = mp_payment.get('sandbox_init_point', '')
+            # Em sandbox/produção, usa o init_point apropriado
+            if not pix_url and sandbox_url:
+                pix_url = sandbox_url
+            mercadopago_utils._log(f"[CHECKOUT] Pix via preference! ID: {order.mp_payment_id}, URL: {pix_url[:80]}...", 'info')
+
     else:
-        # FALHA: Não é possível criar PIX sem Mercado Pago
+        # FALHA: Não é possível criar PIX
         db.session.rollback()
-        flash("Erro ao criar pagamento via Mercado Pago. Tente novamente ou entre em contato com o suporte.", "error")
+        error_msg = "Erro ao criar pagamento via Mercado Pago. Tente novamente ou entre em contato com o suporte."
+        if mp_payment:
+            error_msg += f" (Detalhes: {mp_payment})"
+        mercadopago_utils._log(f"[CHECKOUT] ❌ Falha ao criar Pix: {mp_payment}", 'error')
+        flash(error_msg, "error")
         return redirect(url_for('main.cart'))
-        db.session.commit()
 
     # Calcula o tempo de expiração (15 minutos após criação)
     expiration_time = order.created_at + timedelta(minutes=15)
     expiration_timestamp = int(expiration_time.timestamp())
 
     return render_template('checkout.html', total=total, qr_code=qr_url, pix_code=pix_code,
+                           pix_base64=pix_base64, pix_url=pix_url,
                            mp_payment=mp_payment, order_id=order.id, cart_items=cart_items,
                            expiration_timestamp=expiration_timestamp)
 
@@ -852,7 +1040,8 @@ def mercadopago_webhook():
     # O Mercado Pago envia diferentes tipos de notificações
     # Para pagamentos Pix, o tipo é 'payment'
     if data.get('type') == 'payment':
-        payment_id = data.get('data', {}).get('id')
+        # O Mercado Pago pode enviar 'id' no top level ou dentro de 'data'
+        payment_id = data.get('data', {}).get('id') or data.get('id')
 
         if payment_id:
             # Consulta o status do pagamento no Mercado Pago
@@ -873,31 +1062,14 @@ def mercadopago_webhook():
                             if order.status == 'delivered':
                                 print(f"[WEBHOOK] Pedido {order.id}: Já entregue, ignorando notificação duplicada.")
                                 return jsonify({'status': 'processed'}), 200
-                            elif order.delivery_attempted:
-                                print(f"[WEBHOOK] Pedido {order.id}: Entrega já tentada anteriormente, ignorando.")
-                                if order.status != 'paid':
-                                    order.status = 'paid'
-                                    db.session.commit()
-                                return jsonify({'status': 'processed'}), 200
-                            elif order.status == 'paid':
-                                # Já está como pago, tenta entregar se ainda não entregou
-                                print(f"[WEBHOOK] Pedido {order.id}: Status 'paid', tentando entregar...")
-                                from mercadopago_utils import deliver_gamepasses
-                                success, msg = deliver_gamepasses(order)
-                                # Recarrega do banco para garantir status atualizado
-                                db.session.refresh(order)
-                                print(f"[WEBHOOK] Pedido {order.id}: Entrega - {msg}")
-                                print(f"[WEBHOOK] Pedido {order.id}: Status final: {order.status}")
-                            else:
-                                # Primeira vez que recebe approved
-                                order.status = 'paid'
-                                db.session.commit()
-                                print(f"[WEBHOOK] Pedido {order.id}: Status atualizado para 'paid', iniciando entrega...")
-                                from mercadopago_utils import deliver_gamepasses
-                                success, msg = deliver_gamepasses(order)
-                                db.session.refresh(order)
-                                print(f"[WEBHOOK] Pedido {order.id}: Entrega - {msg}")
-                                print(f"[WEBHOOK] Pedido {order.id}: Status final: {order.status}")
+                            # Sempre tenta entregar se pagamento aprovado (permite retry)
+                            print(f"[WEBHOOK] Pedido {order.id}: Pagamento aprovado, tentando entrega...")
+                            from mercadopago_utils import deliver_gamepasses
+                            success, msg = deliver_gamepasses(order)
+                            # Recarrega do banco para garantir status atualizado
+                            db.session.refresh(order)
+                            print(f"[WEBHOOK] Pedido {order.id}: Entrega - {msg}")
+                            print(f"[WEBHOOK] Pedido {order.id}: Status final: {order.status}")
                         elif mp_status == 'pending' and order.status not in ['paid', 'delivered', 'cancelled']:
                             order.status = 'pending'
                             db.session.commit()
@@ -928,19 +1100,15 @@ def check_payment(order_id):
         mp_status = mercadopago_utils.get_payment_status(order.mp_payment_id)
 
         if mp_status == 'approved' and order.status not in ['delivered']:
-            # Se ainda não tentou entregar, tenta agora
+            # Atualiza status se necessário
             if order.status != 'paid':
                 order.status = 'paid'
                 db.session.commit()
                 print(f"[CHECK_PAYMENT] Pedido {order.id}: Pagamento aprovado! Iniciando entrega...")
-            elif order.delivery_attempted:
-                # Já tentou entregar e não conseguiu — não tenta de novo
-                print(f"[CHECK_PAYMENT] Pedido {order.id}: Entrega já tentada anteriormente, aguardando retry manual.")
-                return jsonify({'status': order.status})
             else:
                 print(f"[CHECK_PAYMENT] Pedido {order.id}: Status 'paid', tentando entregar...")
 
-            # Processa entrega automatica da Gamepass
+            # Processa entrega automatica da Gamepass (sempre permite retry)
             from mercadopago_utils import deliver_gamepasses
             success, msg = deliver_gamepasses(order)
             db.session.refresh(order)

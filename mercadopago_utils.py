@@ -89,6 +89,133 @@ except Exception:
     pass
 
 
+# Configuração do Mercado Pago SDK
+_mp_sdk = None
+
+def get_mp_sdk():
+    global _mp_sdk
+    if _mp_sdk is None:
+        _mp_sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+    return _mp_sdk
+
+def create_pix_payment(total, description, order_id, email):
+    """
+    Cria um pagamento Pix via Mercado Pago (SDK v2).
+    Tenta payment.create (QR code inline) primeiro, depois fallback para preference (redirect).
+    Retorna dict com id, qr_code, qr_code_base64, init_point ou None em caso de erro.
+    """
+    sdk = get_mp_sdk()
+    if not sdk:
+        return None
+
+    # =============================================
+    # MÉTODO 1: Payment API (retorna QR code inline)
+    # =============================================
+    try:
+        result = sdk.payment().create({
+            'transaction_amount': float(total),
+            'description': description,
+            'payment_method_id': 'pix',
+            'payer': {
+                'email': email
+            },
+            'external_reference': str(order_id),
+            'notification_url': os.getenv('MERCADO_PAGO_WEBHOOK_URL', ''),
+        })
+        _log(f"[MERCADO PAGO] payment.create result: status={result.get('status')}, code={result.get('status_code')}", 'info')
+
+        if result.get('status') == 201:
+            resp = result.get('response', {})
+            payment_id = resp.get('id')
+
+            # QR code e EMV estão em point_of_interaction.transaction_data (Pix)
+            tx_data = resp.get('point_of_interaction', {}).get('transaction_data', {})
+            qr_code = tx_data.get('qr_code', '')
+            qr_code_base64 = tx_data.get('qr_code_base64', '')
+
+            _log(f"[MERCADO PAGO] ✅ Pix criado via payment API! ID: {payment_id}, QR len: {len(qr_code)}", 'info')
+            return {
+                'id': payment_id,
+                'qr_code': qr_code,
+                'qr_code_base64': qr_code_base64,
+                'method': 'payment_api',
+            }
+    except Exception as e:
+        _log(f"[MERCADO PAGO] payment.create falhou: {e}", 'warning')
+
+    # =============================================
+    # MÉTODO 2: Preference API (redirecionamento)
+    # =============================================
+    try:
+        import random, string
+        ref = f"{order_id}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}"
+
+        preference = {
+            "items": [
+                {
+                    "title": description,
+                    "quantity": 1,
+                    "unit_price": float(total),
+                    "currency_id": "BRL"
+                }
+            ],
+            "payer": {
+                "email": email
+            },
+            "payment_methods": {
+                "excluded_payment_types": [
+                    {"id": "credit_card"},
+                    {"id": "debit_card"},
+                    {"id": "ticket"}
+                ],
+                "installments": 1
+            },
+            "external_reference": ref,
+            "notification_url": os.getenv('MERCADO_PAGO_WEBHOOK_URL', ''),
+            "statement_descriptor": "PROBUX",
+            "binary_mode": False
+        }
+
+        result = sdk.preference().create(preference)
+        _log(f"[MERCADO PAGO] preference.create result: status={result.get('status')}", 'info')
+
+        if result.get('status') == 201:
+            resp = result.get('response', {})
+            payment_id = resp.get('id')
+            init_point = resp.get('init_point', '')
+            sandbox_init = resp.get('sandbox_init_point', '')
+
+            _log(f"[MERCADO PAGO] ✅ Preferência criada! ID: {payment_id}, init_point: {init_point[:80]}...", 'info')
+            return {
+                'id': payment_id,
+                'qr_code': '',
+                'qr_code_base64': '',
+                'init_point': init_point,
+                'sandbox_init_point': sandbox_init,
+                'method': 'preference',
+            }
+    except Exception as e:
+        _log(f"[MERCADO PAGO] preference.create falhou: {e}", 'warning')
+
+    _log(f"[MERCADO PAGO] ❌ Nenhum método de criação de Pix funcionou.", 'error')
+    return None
+
+
+def get_payment_status(payment_id):
+    """Consulta o status de um pagamento no Mercado Pago."""
+    try:
+        sdk = get_mp_sdk()
+        if not sdk:
+            return None
+        result = sdk.payment().get(payment_id)
+        _log(f"[MERCADO PAGO] payment.get({payment_id}): status={result.get('status')}", 'debug')
+        payment = result.get("response", {})
+        return payment.get("status")
+    except Exception as e:
+        _log(f"[MERCADO PAGO] Erro ao consultar status: {e}", 'error')
+        return None
+
+
 def _log(msg, level='info'):
     try:
         getattr(logger, level)(msg)
@@ -187,15 +314,45 @@ def _build_proxy_url(endpoint):
     return f"{ROBLOX_PROXY_URL}?url={encoded}"
 
 
+def _resolve_domain(endpoint):
+    """Resolve o subdomínio correto do Roblox baseado no endpoint."""
+    if endpoint.startswith('http'):
+        # URL completa - extrai o domínio
+        try:
+            parsed = urllib.parse.urlparse(endpoint)
+            return parsed.netloc  # ex: catalog.roblox.com
+        except Exception:
+            return 'api.roblox.com'
+    # Paths relativos - mapeia por prefixo
+    if endpoint.startswith('/v1/users/'):
+        return 'users.roblox.com'
+    if endpoint.startswith('/v2/users/'):
+        return 'economy.roblox.com'
+    if endpoint.startswith('/v1/user/currency') or endpoint.startswith('/v1/user/balance'):
+        return 'economy.roblox.com'
+    if endpoint.startswith('/v1/catalog/'):
+        return 'catalog.roblox.com'
+    if endpoint.startswith('/v1/auth/') or endpoint.startswith('/v2/auth/'):
+        return 'auth.roblox.com'
+    if endpoint.startswith('/v1/purchases/') or endpoint.startswith('/v1/assets/'):
+        return 'api.roblox.com'
+    if endpoint.startswith('/marketplace/'):
+        return 'www.roblox.com'
+    return 'api.roblox.com'
+
+
 def _proxy_request(method, endpoint, headers=None, body=None, timeout=30):
     """
     Envia request através do proxy Node.js (robo-roblox.js).
     Isso permite contornar bloqueios de IP do Roblox.
 
     O proxy espera:
-      POST /proxy com body JSON: { method, url, headers, body }
+      POST /proxy com body JSON: { method, url, headers, body, domain }
     """
     proxy_url = ROBLOX_PROXY_URL.rstrip('/') + '/proxy'
+
+    # Resolve o domínio correto
+    domain = _resolve_domain(endpoint)
 
     # Extrai apenas o path do endpoint (ex: /v1/purchases/game-pass/1)
     if endpoint.startswith('http'):
@@ -208,6 +365,7 @@ def _proxy_request(method, endpoint, headers=None, body=None, timeout=30):
         'url': endpoint_path,
         'headers': headers or {},
         'body': body,
+        'domain': domain,
     }
 
     try:
@@ -246,7 +404,16 @@ def _roblox_api_request(method, endpoint, session=None, json_data=None, max_retr
         if method.upper() == 'POST':
             headers['Content-Type'] = 'application/json; charset=UTF-8'
 
+        # Extrai XSRF token da session se disponível (importante para POST)
+        if session and hasattr(session, 'headers'):
+            xsrf = session.headers.get('X-CSRF-TOKEN')
+            if xsrf:
+                headers['X-CSRF-TOKEN'] = xsrf
+                _log(f'[ROBLOX PROXY] XSRF token incluído: {xsrf[:20]}...', 'debug')
+
         data, status, error = _proxy_request(method, endpoint, headers, json_data)
+
+        _log(f'[ROBLOX PROXY] {method} {endpoint} → status={status}, error={error}', 'debug')
 
         if error:
             _log(f"[ROBLOX PROXY] ❌ {error}", 'error')
@@ -547,10 +714,10 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
         max_retries=max_retries
     )
 
-    if data and data.get('success'):
+    if data and isinstance(data, dict) and data.get('success'):
         _log(f"[GAMEPASS] ✅ COMPRA SUCEDIDA! Gamepass {gamepass_id}", 'info')
         return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
-    elif data:
+    elif data and isinstance(data, dict):
         error_msg = data.get('error', data.get('errorMessage', 'Erro desconhecido'))
         _log(f"[GAMEPASS] ❌ API erro: {error_msg}", 'error')
 
@@ -562,7 +729,7 @@ def buy_gamepass_with_cookie(gamepass_link, roblox_cookie, expected_price=None, 
             json_data={'expectedPrice': int(expected_price) if expected_price else 1},
             max_retries=2
         )
-        if data2 and data2.get('success'):
+        if data2 and isinstance(data2, dict) and data2.get('success'):
             _log(f"[GAMEPASS] ✅ COMPRA SUCEDIDA (fallback)! Gamepass {gamepass_id}", 'info')
             return (True, f"Gamepass {gamepass_id} comprada com sucesso!")
 
@@ -618,14 +785,16 @@ def deliver_gamepasses(order, notify_user=True):
     all_success = success_count == len(gamepass_items) and len(gamepass_items) > 0
 
     # Marca que já tentamos entregar (evita loop infinito no check_payment)
-    order.delivery_attempted = True
 
     if all_success:
         order.delivered = True
         order.delivered_at = datetime.utcnow()
         order.status = 'delivered'
+        order.delivery_attempted = True
     else:
         order.status = 'paid'
+        # Permite retry em caso de falha parcial
+        # delivery_attempted so e setado quando TODOS os itens foram entregues
 
     db.session.commit()
 

@@ -86,12 +86,20 @@
                     </p>
 
                     <div class="qr-container mb-5">
-                        {% if mp_payment and mp_payment.qr_code_base64 %}
-                            <img src="data:image/png;base64,{{ mp_payment.qr_code_base64 }}" alt="QR Code Pix" style="width: 250px; height: 250px; object-fit: contain;">
-                        {% elif qr_code %}
-                            <img src="{{ qr_code }}" alt="QR Code Pix" style="width: 250px; height: 250px; object-fit: contain;">
+                        {% if pix_base64 %}
+                            <img src="data:image/png;base64,{{ pix_base64 }}" alt="QR Code Pix" class="img-fluid" style="max-width: 250px;">
+                        {% elif pix_code and pix_code != '' %}
+                            <p class="has-text-grey mb-2">Copie o código abaixo no app do banco:</p>
+                            <div class="box" style="background: #f0f0f0; padding: 15px; border-radius: 8px;">
+                                <p class="is-size-7 has-text-weight-bold" style="word-break: break-all; font-family: monospace;">{{ pix_code }}</p>
+                            </div>
+                        {% elif pix_url and pix_url != '' %}
+                            <p class="has-text-grey mb-2">Clique no link abaixo para pagar via Pix:</p>
+                            <a href="{{ pix_url }}" target="_blank" class="button is-link is-fullwidth mb-2">
+                                <i class="fas fa-external-link-alt"></i>&nbsp; Abrir Pix no Mercado Pago
+                            </a>
                         {% else %}
-                            <p class="has-text-grey">QR Code não disponível</p>
+                            <p class="has-text-grey">QR Code não disponível. Tente novamente.</p>
                         {% endif %}
                     </div>
 
