@@ -77,10 +77,61 @@ app = create_app()
 
 if __name__ == '__main__':
     import os
+    import subprocess
+    import sys
 
-    # Square Cloud / Railway / Render definem a porta via variável PORT
-    port = int(os.environ.get('PORT', 8080))
-    is_production = os.getenv('FLASK_ENV', 'production') == 'production'
+    # Se RUN_PROXY=true (padrão), inicia o proxy Node.js automaticamente
+    # Defina RUN_PROXY=false se o proxy já estiver rodando separadamente
+    # (ex: Cloudflare Worker, servidor remoto, etc.)
+    run_proxy = os.environ.get('RUN_PROXY', 'true').lower() == 'true'
 
-    # Nunca use debug=True em produção!
-    app.run(debug=False, host='0.0.0.0', port=port)
+    proxy_process = None
+
+    if run_proxy:
+        try:
+            print('🚀 Iniciando proxy Roblox (Node.js)...')
+            proxy_process = subprocess.Popen(
+                ['node', 'proxy-roblox.js'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            # Verifica se o proxy iniciou com sucesso
+            import time
+            time.sleep(0.5)
+            if proxy_process.poll() is not None:
+                stdout, _ = proxy_process.communicate()
+                print(f'⚠️  Proxy falhou ao iniciar: {stdout.decode("utf-8", errors="replace")}')
+                proxy_process = None
+            else:
+                print(f'✅ Proxy Roblox rodando (PID: {proxy_process.pid})')
+                print(f'   Endpoint: http://localhost:3999/proxy')
+        except FileNotFoundError:
+            print('⚠️  "node" não encontrado no PATH. Proxy não será iniciado.')
+            print('   Instale o Node.js ou defina RUN_PROXY=false')
+            proxy_process = None
+        except Exception as e:
+            print(f'⚠️  Erro ao iniciar proxy: {e}')
+            proxy_process = None
+
+    try:
+        # Square Cloud / Railway / Render definem a porta via variável PORT
+        port = int(os.environ.get('PORT', 8080))
+        is_production = os.getenv('FLASK_ENV', 'production') == 'production'
+
+        # Nunca use debug=True em produção!
+        print(f'🌐 Flask rodando na porta {port}')
+        app.run(debug=False, host='0.0.0.0', port=port)
+    except KeyboardInterrupt:
+        print('\n🛑 Servidor interrompido pelo usuário.')
+    except Exception as e:
+        print(f'\n❌ Erro no servidor Flask: {e}')
+    finally:
+        if proxy_process:
+            print('🛑 Encerrando proxy Roblox...')
+            proxy_process.terminate()
+            try:
+                proxy_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proxy_process.kill()
+                proxy_process.wait()
+            print('✅ Proxy Roblox encerrado.')
