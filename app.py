@@ -79,6 +79,7 @@ if __name__ == '__main__':
     import os
     import subprocess
     import sys
+    import signal
 
     # Se RUN_PROXY=true (padrão), inicia o proxy Node.js automaticamente
     # Defina RUN_PROXY=false se o proxy já estiver rodando separadamente
@@ -88,6 +89,21 @@ if __name__ == '__main__':
     proxy_process = None
 
     if run_proxy:
+        # Mata processos Node presos na porta 3999 antes de iniciar
+        try:
+            if sys.platform == 'win32':
+                subprocess.run(
+                    'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :3999\') do taskkill /f /pid %a 2>nul',
+                    shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
+                )
+            else:
+                subprocess.run(
+                    'pkill -f "node proxy-roblox.js" 2>/dev/null; sleep 0.5',
+                    shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
+                )
+        except Exception:
+            pass
+
         try:
             print('🚀 Iniciando proxy Roblox (Node.js)...')
             proxy_process = subprocess.Popen(
